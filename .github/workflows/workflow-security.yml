@@ -69,10 +69,32 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install actionlint
+        # Downloads the release asset and verifies it against actionlint's own
+        # published SHA256 before extracting, rather than the convenience
+        # install script -- that script pipes curl straight into tar with NO
+        # integrity check at all, which is what this job used to do.
+        #
+        # That is a poor look in the workflow whose entire job is auditing
+        # workflow security, and azure-pipelines-terraform had already refused
+        # it: that repository runs its own zizmor and actionlint precisely
+        # because this shared definition was weaker than its local one. This
+        # change is that repo's convention carried UP, so every caller gets it
+        # instead of one repo keeping it.
+        #
+        # Checksum from actionlint's published checksums.txt for v1.7.12
+        # (linux_amd64, matching this job's ubuntu-latest runner), verified
+        # against the release rather than copied on trust:
+        # https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_checksums.txt
+        run: |
+          set -euo pipefail
+          curl -sSfLO https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint_1.7.12_linux_amd64.tar.gz" | sha256sum -c -
+          tar xzf actionlint_1.7.12_linux_amd64.tar.gz actionlint
+
       - name: actionlint
         run: |
           set -euo pipefail
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
           # shellcheck/pyflakes are separate concerns and not installed here; the
           # schema check is the part that prevents a startup failure.
           ./actionlint -shellcheck= -pyflakes= -color
