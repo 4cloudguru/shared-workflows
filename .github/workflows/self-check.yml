@@ -1,0 +1,36 @@
+---
+# This repository lints ITSELF with the definition it publishes.
+#
+# WHY IT MATTERS MORE HERE THAN ANYWHERE ELSE
+#
+# A change to this repo executes inside the CI of every repository that calls
+# it -- several of which hold `id-token: write` and release credentials. That
+# makes this the most privileged repo in the estate and, until this file
+# existed, the only one with no CI at all. A workflow with a schema error
+# pushed here would fail at STARTUP in every caller: zero jobs, no logs, and
+# unable to fail a required check because no job ran.
+#
+# Calling ./.github/workflows/workflow-security.yml rather than duplicating the
+# jobs is deliberate. If the shared definition breaks, THIS check breaks first
+# and here -- before any caller pins the broken commit. A hand-rolled copy would
+# keep passing while the thing it is meant to represent was broken, which is the
+# failure this whole repository exists to remove.
+name: Self Check
+
+"on":
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-check-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflow-security:
+    uses: ./.github/workflows/workflow-security.yml
