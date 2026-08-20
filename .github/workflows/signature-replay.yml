@@ -643,12 +643,52 @@ jobs:
       - name: Replay recorded signatures
         env:
           GH_TOKEN: "${{ github.token }}"
+        # BOTH SURFACES ARE REDACTED, or neither is.
+        #
+        # replay.py produces a per-issue map of the estate's KNOWN-DEFECTIVE,
+        # NOT-YET-FIXED sites across fifteen repositories, derived from a ledger
+        # in the PRIVATE security-orchestration repo. Almost every caller of this
+        # workflow is PUBLIC, and an Actions artifact inherits REPOSITORY read
+        # access -- there is no per-artifact ACL to reach for.
+        #
+        # The step LOG is public on those repos too, and replay.py's human render
+        # prints every REGRESSED and UNADDRESSED site to stdout. Redacting only
+        # the artifact would move the same data from one world-readable surface
+        # to another, so the raw stdout is captured to a file rather than printed
+        # and the redacted render is what gets echoed.
+        #
+        # WHAT SURVIVES is what makes a merge-blocking check auditable:
+        # signature_id, ran_in, skipped, caveats, per-set COUNTS, failed, exit. A
+        # green replay is worth nothing until you can see which signatures ran and
+        # what they skipped, because a signature that enumerated nothing exits
+        # clean and looks exactly like one that enumerated everything and found
+        # nothing. What is dropped is the site-level lists.
+        #
+        # The redactor FAILS CLOSED: a report it cannot redact safely exits 1 and
+        # fails this job rather than publishing an unredacted one. `set -o
+        # pipefail` plus the explicit `exit "$status"` means the replay's own exit
+        # code still decides the check -- redaction changes what is published, not
+        # whether the gate passed.
+        #
+        # Only azure-pipelines-release-docs did this. Fifteen callers published
+        # the raw report AND printed every site to a public log.
         run: |
+          set -euo pipefail
+          status=0
           python security-orchestration/remediation/replay/replay.py \
             --ledger security-orchestration/remediation/signatures/ledger.json \
             --repos-root suite \
             --verify-linked-issues \
-            --json replay-report.json
+            --json replay-report.raw.json > replay-report.raw.txt || status=$?
+          node security-orchestration/remediation/replay/redact-replay-report.js \
+            --in-text replay-report.raw.txt \
+            --in-json replay-report.raw.json \
+            --out-text replay-report.txt \
+            --out-json replay-report.json \
+            --status "$status"
+          rm -f replay-report.raw.txt replay-report.raw.json
+          cat replay-report.txt
+          exit "$status"
 
       # Exit 1 or 2 already failed the step above; this keeps the machine-readable
       # report for the run someone will actually want to read.
@@ -667,20 +707,14 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: signature-replay-report
-          path: replay-report.json
-          # Bounded, and deliberately short.
-          #
-          # NOT a substitute for redaction. azure-pipelines-release-docs pipes
-          # the replay output through a redactor and uploads only the redacted
-          # copy, because the raw report carries content from the PRIVATE
-          # security-orchestration ledger and Actions artifacts inherit
-          # REPOSITORY read access -- on repos that are public. The other
-          # fifteen copies upload the raw report.
-          #
-          # That redactor lives in release-docs' own scripts/ and cannot be
-          # called from here, so this is the second control rather than the
-          # first one. The first one is still missing and is tracked separately;
-          # shortening the window is what can be done from a shared workflow
-          # today.
+          path: |
+            replay-report.json
+            replay-report.txt
+          # Bounded, and deliberately short -- the SECOND control now that the
+          # first one exists. What is uploaded here has already been through
+          # remediation/replay/redact-replay-report.js, so it carries counts and
+          # provenance but no site lists. Retention still bounds how long even
+          # that sits on a public repository, because Actions artifacts inherit
+          # repository read access and no per-artifact ACL exists.
           retention-days: 7
           if-no-files-found: warn
