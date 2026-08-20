@@ -1,0 +1,17 @@
+---
+# The workflows here pin every action by full SHA, which is correct and is also
+# why this file is not optional: a SHA pin never updates itself, so without
+# Dependabot the pins rot silently and this repo becomes the estate's oldest
+# action versions while looking deliberate.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(ci)
+    groups:
+      actions:
+        patterns: ["*"]
