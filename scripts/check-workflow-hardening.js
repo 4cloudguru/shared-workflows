@@ -380,17 +380,35 @@ if (!isAdoExtension) {
 } else {
   enumerated.perTaskInstall = 'checked'
   const source = fs.readFileSync(forEachTask, 'utf8')
-  const block = source.slice(source.indexOf('const ACTIONS = {'), source.indexOf('function npm('))
-  const ci = /^\s{2}ci:\s*(.*)$/m.exec(block)
+
+  // The per-task install table is found by SHAPE, not by a fixed name and
+  // indent. Two extension repos implement this file differently and both are
+  // correct: release-docs declares `const ACTIONS = {` at two-space indent and
+  // spawns through a `npm(` helper; azure-pipelines-terraform declares
+  // `const COMMANDS = {` at four-space indent and builds a shell string.
+  //
+  // The earlier matcher sliced between the literals 'const ACTIONS = {' and
+  // 'function npm(' and required exactly two leading spaces, so it reported
+  // BOTH "defines no ci action" and "defines no npm helper" against a file
+  // whose ci action does carry --ignore-scripts. A gate that reports a false
+  // FAIL is as damaging as one that reports a false PASS: it gets satisfied by
+  // reformatting code to suit the matcher, which teaches everyone that the gate
+  // is about its own shape rather than about the property.
+  const bare = source
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*\/\//.test(line))
+    .join('\n')
+
+  const ci = /^\s*ci\s*:\s*(.*)$/m.exec(bare)
   if (!ci) {
-    fail('install', 'scripts/for-each-task.js', "ACTIONS defines no `ci` action — the per-task install this gate checks cannot be found")
+    fail('install', 'scripts/for-each-task.js', "defines no `ci` per-task action — the install this gate checks cannot be found")
   } else {
     enumerated.installs++
     if (!/--ignore-scripts/.test(ci[1])) {
       fail(
         'install',
         'scripts/for-each-task.js',
-        "ACTIONS.ci runs the per-task `npm ci` without --ignore-scripts. The root install is hardened and this one is " +
+        'the per-task `npm ci` runs without --ignore-scripts. The root install is hardened and this one is ' +
           'not, which is where third-party task dependencies actually live — and `npm run build:release` copies each ' +
           'task directory into the packaged .vsix afterwards (#21)',
       )
@@ -402,13 +420,11 @@ if (!isAdoExtension) {
   // workflow scan skips `#` lines: this file documents the defect it no longer
   // has, and a gate that fired on the explanation would make writing one a
   // build failure.
-  const code = source
-    .split(/\r?\n/)
-    .filter((line) => !/^\s*\/\//.test(line))
-    .join('\n')
+  const code = bare
+  const usesExecFile = /execFileSync|execFile\s*\(/.test(code)
 
   const wrapper = /(['"])[^'"\n]*\.(?:cmd|bat)\1/.exec(code)
-  if (wrapper) {
+  if (wrapper && usesExecFile) {
     fail(
       'install',
       'scripts/for-each-task.js',
@@ -419,10 +435,21 @@ if (!isAdoExtension) {
     )
   }
 
+  // The `npm(` helper is ONE answer to #45, not the only one. #45 is that
+  // execFile cannot launch a .cmd/.bat wrapper, so a repo that spawns npm
+  // through execFile needs the `node <npm-cli.js>` form. A repo that builds a
+  // shell command string and runs execSync -- which azure-pipelines-terraform
+  // does -- never hits that limitation, and demanding the helper there would
+  // force working code to be restructured to satisfy a matcher.
+  //
+  // So these checks run where the concern actually bites. The spawn style is
+  // RECORDED either way, because a check that quietly does not run reads
+  // identically to one that ran and approved.
   const npmFn = /function npm\s*\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(code)
-  if (!npmFn) {
-    fail('install', 'scripts/for-each-task.js', 'defines no `npm(` helper — this gate cannot tell how the per-task npm is spawned (#45)')
-  } else {
+  enumerated.perTaskSpawn = npmFn ? 'npm() helper' : usesExecFile ? 'execFile (no helper)' : 'shell string'
+  if (!npmFn && usesExecFile) {
+    fail('install', 'scripts/for-each-task.js', 'spawns npm through execFile with no `npm(` helper — execFile cannot launch a .cmd/.bat wrapper, so this throws EINVAL on Windows (#45)')
+  } else if (npmFn) {
     if (!/execFileSync\(\s*process\.execPath/.test(npmFn[0])) {
       fail(
         'install',
@@ -461,7 +488,8 @@ const summary =
   `${enumerated.installs} npm install invocation(s), ${enumerated.hardenRunners} harden-runner step(s), ` +
   `${enumerated.preHardenActionlessSteps} actionless step(s) ahead of a harden-runner, ` +
   `${enumerated.egressExceptions} recorded egress exception(s), ` +
-  `per-task install: ${enumerated.perTaskInstall}.`
+  `per-task install: ${enumerated.perTaskInstall}` +
+  `${enumerated.perTaskSpawn ? `, spawn: ${enumerated.perTaskSpawn}` : ''}.`
 
 if (JSON_OUTPUT) {
   console.log(JSON.stringify({ enumerated, findings, failures: findings.length }, null, 2))
