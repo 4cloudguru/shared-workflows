@@ -69,7 +69,7 @@
 // and a gate that needs one cannot run before `npm ci`. Same choice, for the
 // same reason, as scripts/check-audit-scope.js.
 //
-// Usage:  node scripts/check-workflow-hardening.js [repoRoot] [--json]
+// Usage:  node scripts/check-workflow-hardening.cjs [repoRoot] [--json]
 // Exit 0 = every hardening property holds. Exit 1 = drift, listed.
 //
 // Mutation-proved by scripts/test-workflow-hardening.js, which runs beside it.
