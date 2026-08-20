@@ -14,10 +14,18 @@ inputs:
     required: false
     default: "3"
 
+outputs:
+  bin-path:
+    description: >-
+      The directory the tool was installed into ($(go env GOPATH)/bin). Add it
+      to PATH in the step that uses the tool.
+    value: ${{ steps.install.outputs.bin-path }}
+
 runs:
   using: composite
   steps:
     - name: Install ${{ inputs.package }}
+      id: install
       shell: bash
       env:
         PACKAGE: ${{ inputs.package }}
@@ -83,5 +91,17 @@ runs:
           exit "${rc}"
         fi
 
+        # Report the install directory as an OUTPUT rather than appending it to
+        # GITHUB_PATH. zizmor flags any write to an environment file
+        # (github-env: "write to GITHUB_PATH may allow code execution"), and
+        # this repository gates on zizmor, so the choice was between a
+        # documented suppression and not needing one. Not needing one is better:
+        # the estate's rule is to prefer teaching a signature over exempting a
+        # site, and that cuts both ways -- do not add a site that needs exempting.
+        #
+        # Nothing is lost. Callers already put GOPATH/bin on PATH themselves in
+        # the step that runs the tool, because a composite action cannot alter a
+        # later step's PATH without exactly the environment-file write being
+        # avoided here.
         echo "${PACKAGE} installed."
-        printf '%s\n' "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
+        printf 'bin-path=%s\n' "$(go env GOPATH)/bin" >> "${GITHUB_OUTPUT}"
