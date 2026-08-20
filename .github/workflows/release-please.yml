@@ -1,0 +1,93 @@
+---
+# Reusable release-please job, shared across the Terraform suite and the
+# pipeline-task families.
+#
+# WHY THIS EXISTS
+#
+# release-please.yml existed in TWELVE repositories across two owners. Stripped
+# of comments it was 27 lines, and there were seven distinct versions of it --
+# but the variation was not need, it was drift. Every copy used the same
+# config-file, the same manifest-file, the same App id variable and the same
+# App key secret. The ONLY substantive difference was the permission model:
+#
+#   least-privilege (7 repos)  contents: read at the workflow, elevated to
+#                              contents/pull-requests write ON THE TOKEN STEP
+#   broad           (5 repos)  contents: write for the whole workflow
+#
+# Nobody decided the five should be more permissive. Somebody tightened it in
+# one family and the other five never heard -- the same shape as the egress fix
+# that reached one of three HTTP clients, the carrier fix that reached one of
+# three dev-admin seeds, and the tfx validation fix that would have reached one
+# of three extensions. This file is the least-privilege model, so calling it
+# carries the improvement rather than re-deriving it.
+#
+# CALLING IT
+#
+#   jobs:
+#     release-please:
+#       uses: 4cloudguru/shared-workflows/.github/workflows/release-please.yml@<sha>
+#       secrets: inherit
+#
+# Pin by SHA, not by a moving ref. A shared workflow is itself a thing that can
+# drift -- repos on different pins is the same defect wearing a new hat, and
+# HARDER to see than divergent files, because every repo looks like it is using
+# "the shared one". That is what the pin-parity signature is for.
+#
+# `vars` resolves against the CALLER's repository, so RELEASE_DISPATCH_APP_ID
+# stays per-repo and nothing about the App installation changes here.
+name: Release Please (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      config-file:
+        description: release-please config path, relative to the caller's repo root.
+        type: string
+        default: .release-please-config.json
+      manifest-file:
+        description: release-please manifest path, relative to the caller's repo root.
+        type: string
+        default: .release-please-manifest.json
+    secrets:
+      RELEASE_DISPATCH_APP_KEY:
+        description: >-
+          The GitHub App private key. Declared by its real name rather than
+          aliased, so `secrets: inherit` at the call site satisfies it and
+          actionlint can type-check the reference below -- a reusable workflow
+          only has the secrets it DECLARES in scope, so an undeclared fallback
+          reference would never resolve at runtime even though it reads fine.
+        required: true
+
+# Least privilege at the workflow. The token step below elevates only what
+# release-please actually needs, on the one step that needs it.
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get GitHub App token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: token
+        with:
+          client-id: ${{ vars.RELEASE_DISPATCH_APP_ID }}
+          private-key: ${{ secrets.RELEASE_DISPATCH_APP_KEY }}
+          # Scope the installation token to exactly what release-please needs
+          # (open/update the release PR + push the version-bump commit/tag)
+          # instead of inheriting the app's blanket installation permissions.
+          #
+          # NOTE: the shared App installation is NOT granted the `issues`
+          # permission, so requesting permission-issues here would 422 the token
+          # step and break release-please entirely. That was tried and reverted
+          # once already (registry-backend #261 -> #262); do not re-add it.
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Run release-please
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.token.outputs.token }}
+          config-file: ${{ inputs.config-file }}
+          manifest-file: ${{ inputs.manifest-file }}
