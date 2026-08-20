@@ -83,11 +83,30 @@ runs:
             # changelog entry was the remainder of that sentence.
             body=$(tail -n +2 <<<"$msg")
             spaced=$(grep -cE '^BREAKING CHANGE:' <<<"$body" || true)
+            # release-please requires a NON-EMPTY capture from
+            # /BREAKING-CHANGE:\s*(.*)/ -- `if (breakingChangeMatch && breakingChangeMatch[1])`
+            # -- so a token with nothing after it is not a declaration there.
+            #
+            # `\s` crosses NEWLINES, which narrows this a long way: a token whose
+            # description sits on a later line still counts, and so does one whose
+            # "description" is merely the next footer. Verified against the shipped
+            # parser, not reasoned about. The ONLY shape release-please ignores is a
+            # token followed by nothing but whitespace to the END of the body, so
+            # exactly that one is dropped before counting.
+            #
+            # Without this the guard BLOCKED two shapes release-please ignores: a
+            # sentence ending in the bare token, and a real footer followed by one.
+            # A guard that rejects what the tool it models accepts is one people
+            # route around and then delete.
             # Occurrences, not lines. The squash concatenates every body into one
             # and that regex is not global, so a second match on the same line is
             # dropped exactly as surely as one in a later commit.
-            hyphenated=$(grep -oF 'BREAKING-CHANGE:' <<<"$body" | grep -c '' || true)
-            anchored=$(grep -cE '^BREAKING-CHANGE:' <<<"$body" || true)
+            counted_body="$body"
+            if [[ "$counted_body" =~ ^(.*)BREAKING-CHANGE:[[:space:]]*$ ]]; then
+              counted_body="${BASH_REMATCH[1]}"
+            fi
+            hyphenated=$(grep -oF 'BREAKING-CHANGE:' <<<"$counted_body" | grep -c '' || true)
+            anchored=$(grep -cE '^BREAKING-CHANGE:' <<<"$counted_body" || true)
             # A hyphenated token anywhere but the start of a line is a
             # declaration nobody WROTE and release-please acts on regardless.
             stray=$((hyphenated - anchored))

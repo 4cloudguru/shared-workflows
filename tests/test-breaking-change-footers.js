@@ -296,6 +296,35 @@ try {
     //
     // The mention is in the BODY, not the subject. The old fixture was a
     // single-line message, so it never exercised the body at all.
+    // The EMPTY-REMAINDER shapes. release-please requires a non-empty capture
+    // from /BREAKING-CHANGE:\s*(.*)/, so a token with nothing after it is not a
+    // declaration there -- and the guard used to BLOCK both of these, which is a
+    // guard rejecting what the tool it models accepts.
+    //
+    // `\s` crosses newlines, so this exclusion is narrow on purpose: only a token
+    // followed by nothing but whitespace to the END of the body is dropped. The
+    // two cases below it (`next-line`, `bare-then-footer`) still COUNT, because
+    // release-please counts them.
+    expectPass(
+        'bare-token-ends-the-body',
+        ['docs: name the token\n\nthe hyphenated spelling is BREAKING-CHANGE:'],
+        ['declarations in this PR: 0'],
+    );
+    expectPass(
+        'real-footer-then-bare-token',
+        [`feat: rework the path\n\nBREAKING-CHANGE: the flag moved\nBREAKING-CHANGE:`],
+        ['declarations in this PR: 1'],
+    );
+    expectPass(
+        'description-on-the-next-line',
+        ['feat: rework the path\n\nBREAKING-CHANGE:\nthe flag moved'],
+        ['declarations in this PR: 1'],
+    );
+    expectPass(
+        'bare-token-then-another-footer',
+        ['feat: rework the path\n\nBREAKING-CHANGE:\nCloses: #1'],
+        ['declarations in this PR: 1'],
+    );
     expectPass(
         'prose-mention',
         ['docs: explain the footer rule\n\nA line that merely says BREAKING CHANGE: in the middle of a\nsentence is prose, and release-please never reads it as a footer.'],
