@@ -83,9 +83,17 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: signature-replay-${{ github.ref }}
-  cancel-in-progress: true
+# NO `concurrency:` HERE, deliberately.
+#
+# The caller declares `concurrency: signature-replay-${{ github.ref }}`. This
+# file used to declare the SAME group -- and a called workflow sharing its
+# caller's concurrency group queues behind the caller, which is itself waiting
+# for the called workflow to finish. The run never starts and GitHub reports
+# only "this run likely failed because of a workflow file issue", with no jobs
+# and no annotations to read.
+#
+# Concurrency belongs to the caller: it is the caller's triggers that decide
+# when a replay runs, and the caller's ref that identifies it.
 
 jobs:
   replay:
