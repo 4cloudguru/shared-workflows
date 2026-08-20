@@ -216,9 +216,23 @@ for (const file of workflowFiles) {
   })
 
   // ── 2. INSTALL HARDENING ──────────────────────────────────────────────────
+  // Blank the contents of quoted strings before matching, length-preserving so
+  // column positions survive. An `echo "::notice::... run npm ci && npm run
+  // build ..."` is REMEDIATION ADVICE telling a human what to type -- it is not
+  // an install this workflow performs, and flagging it demands --ignore-scripts
+  // on a sentence.
+  //
+  // terraform-drift-report and terraform-module-publish both carry exactly that
+  // notice, so the gate reported four install findings in each when three were
+  // real. This is the same defect as reading call edges out of string literals,
+  // which fabricated 53 sites in a Go signature earlier in this programme; the
+  // fix is the same one.
+  const blankStrings = (text) =>
+    text.replace(/(['"])(?:\\.|(?!\1)[^\\])*\1/g, (m) => m[0] + ' '.repeat(m.length - 2) + m[0])
+
   lines.forEach((line, index) => {
     if (isComment(line)) return
-    if (!/\bnpm\s+(ci|install|i)\b/.test(line)) return
+    if (!/\bnpm\s+(ci|install|i)\b/.test(blankStrings(line))) return
     enumerated.installs++
     if (/--ignore-scripts\b/.test(line)) return
     fail(
