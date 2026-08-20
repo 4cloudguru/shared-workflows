@@ -45,3 +45,35 @@ jobs:
     uses: ./.github/workflows/workflow-hardening.yml
     with:
       script-ref: ${{ github.sha }}
+
+  # The footer guard is 128 lines of shell shared by nine repositories, so a
+  # mistake in it is a mistake in nine places at once -- which is exactly what
+  # happened: a line-anchored expression under-counted against release-please and
+  # let a prose sentence naming the token propose a MAJOR version bump.
+  #
+  # The test EXTRACTS the script from the action rather than carrying a copy. A
+  # test with its own copy passes while the real one rots, which is the failure
+  # mode this whole repository exists to remove.
+  breaking-change-footers-guard:
+    name: Footer guard self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      # hardening-exception: egress-audit — this job clones this repository and runs a
+      #   node test against a shell script with a stubbed `gh`; it makes no network call
+      #   of its own. harden-runner has never run in this repository on this job, so no
+      #   endpoint baseline exists and a block policy written without one fails closed
+      #   on its first run; audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Footer guard self-test
+        run: node tests/test-breaking-change-footers.js
