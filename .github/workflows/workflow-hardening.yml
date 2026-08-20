@@ -50,7 +50,7 @@ jobs:
       # REQUIRED, not defaulted. A default would have to name a literal commit,
       # and the only commit available to write is the one BEFORE the change that
       # adds the checker -- so the default would point at a tree where
-      # scripts/check-workflow-hardening.js does not exist, and every caller
+      # scripts/check-workflow-hardening.cjs does not exist, and every caller
       # would fail on a file-not-found. Defaulting to a branch instead would
       # make the gate mutable, which is the opposite of what pinning is for.
       #
@@ -66,6 +66,16 @@ jobs:
           path: .shared-workflows
           persist-credentials: false
 
+      # .cjs, not .js. The checker is checked out INSIDE the caller's workspace,
+      # so node resolves the nearest package.json -- the CALLER'S -- to decide
+      # the module system. A caller declaring "type": "module" made this
+      # CommonJS file load as ESM and die with:
+      #
+      #   ReferenceError: require is not defined in ES module scope
+      #
+      # That is not a finding about the caller; it is the gate failing to run at
+      # all, in a way that looks exactly like the caller failing the gate. A .cjs
+      # extension is CommonJS regardless of any package.json above it.
       - name: Assert workflow-hardening invariants
         env:
           # Explicitly the checkout root. The checker defaults to its own
@@ -74,4 +84,4 @@ jobs:
           # produced fifteen identical "clean" results in testing before it was
           # noticed.
           TARGET: ${{ github.workspace }}
-        run: node .shared-workflows/scripts/check-workflow-hardening.js "$TARGET"
+        run: node .shared-workflows/scripts/check-workflow-hardening.cjs "$TARGET"
