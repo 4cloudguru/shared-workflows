@@ -1,0 +1,77 @@
+---
+# Workflow-hardening gate, shared.
+#
+# Asserts that a caller's workflows enforce four properties rather than merely
+# conventionally having them: every `uses:` pinned to a full SHA and LABELLED
+# with the version that SHA is; every job declaring a timeout; harden-runner
+# present and ahead of any other action; npm installs run with --ignore-scripts.
+#
+# WHY THIS IS SHARED. It existed in ONE of the fourteen repos
+# (azure-pipelines-release-docs) and caught a real defect the moment a shared
+# workflow pin reached it -- an unlabelled 40-hex SHA that the other twelve
+# repos had accepted without complaint. A gate that lives in one repo only
+# protects one repo, and the estate has repeatedly found that the repo holding
+# the improvement is not the repo that needs it.
+#
+# It reports what it ENUMERATED as well as what it found, because a gate that
+# scanned nothing exits 0 exactly like a gate that scanned everything and
+# approved. Read the enumerated line before believing the verdict.
+
+on:
+  workflow_call:
+    inputs:
+      script-ref:
+        description: >-
+          Commit of 4cloudguru/shared-workflows to take the checker from. MUST
+          be the same commit this workflow is pinned at on the caller's `uses:`
+          line.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-hardening:
+    name: Workflow hardening
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: Check out the calling repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # REQUIRED, not defaulted. A default would have to name a literal commit,
+      # and the only commit available to write is the one BEFORE the change that
+      # adds the checker -- so the default would point at a tree where
+      # scripts/check-workflow-hardening.js does not exist, and every caller
+      # would fail on a file-not-found. Defaulting to a branch instead would
+      # make the gate mutable, which is the opposite of what pinning is for.
+      #
+      # The checker is taken from shared-workflows at a pinned commit rather
+      # than from the caller, so a repo cannot weaken its own gate by editing
+      # its copy -- which is the failure mode of shipping the script into
+      # fourteen repos.
+      - name: Check out the shared checker
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: 4cloudguru/shared-workflows
+          ref: ${{ inputs.script-ref }}
+          path: .shared-workflows
+          persist-credentials: false
+
+      - name: Assert workflow-hardening invariants
+        env:
+          # Explicitly the checkout root. The checker defaults to its own
+          # parent directory when given no argument, which would silently make
+          # it audit shared-workflows instead of the caller -- a mistake that
+          # produced fifteen identical "clean" results in testing before it was
+          # noticed.
+          TARGET: ${{ github.workspace }}
+        run: node .shared-workflows/scripts/check-workflow-hardening.js "$TARGET"
