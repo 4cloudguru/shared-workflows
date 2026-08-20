@@ -34,3 +34,14 @@ concurrency:
 jobs:
   workflow-security:
     uses: ./.github/workflows/workflow-security.yml
+
+  # This repository publishes the workflow-hardening gate and did not run it.
+  # Pointed at itself it reported six findings: two jobs with no timeout, two
+  # never reaching harden-runner, and two harden-runner steps on audit with no
+  # recorded reason. The repo that hands everyone else a gate is not exempt from
+  # it, and a local `./` reference means it always runs the definition in the
+  # commit under review rather than a published one.
+  workflow-hardening:
+    uses: ./.github/workflows/workflow-hardening.yml
+    with:
+      script-ref: ${{ github.sha }}

@@ -103,6 +103,10 @@ jobs:
       # it at all, and a blocking egress policy on a job that talks to the
       # GitHub API and npm would fail closed on day one. Audit produces the
       # baseline a block policy would need.
+      # hardening-exception: egress-audit — runs only shell against the checkout, so
+      #   its egress is already minimal, but harden-runner has never run in this
+      #   repository, so no endpoint baseline exists and a block policy written
+      #   without one fails closed on its first run; audit is what produces that list
       - name: Harden the runner
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
