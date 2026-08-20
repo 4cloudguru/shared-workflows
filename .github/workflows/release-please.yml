@@ -108,6 +108,25 @@ jobs:
         with:
           egress-policy: audit
 
+      # Fail with an actionable message rather than a 401/422 out of the token
+      # step. This matters MORE in a shared workflow than it did in the single
+      # repo this was carried up from: a repo adopting this definition without
+      # the App installed is now a routine onboarding mistake, not a one-off,
+      # and "Bad credentials" does not tell anyone which knob to turn.
+      #
+      # This checks only that the values are PRESENT. A wrong-but-present key
+      # still fails at the mint below, which is the correct place for it -- this
+      # step is for the empty case, which is the common one.
+      - name: Verify the release App credentials are configured
+        env:
+          APP_ID: ${{ vars.RELEASE_DISPATCH_APP_ID }}
+          APP_KEY: ${{ secrets.RELEASE_DISPATCH_APP_KEY }}
+        run: |
+          if [ -z "${APP_ID}" ] || [ -z "${APP_KEY}" ]; then
+            echo "::error::Missing release App credentials. Set the repository variable RELEASE_DISPATCH_APP_ID and the repository secret RELEASE_DISPATCH_APP_KEY, and install that App on this repository with contents:write and pull-requests:write."
+            exit 1
+          fi
+
       - name: Get GitHub App token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: token
