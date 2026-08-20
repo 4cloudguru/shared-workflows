@@ -375,8 +375,47 @@ const forEachTask = path.join(ROOT, 'scripts', 'for-each-task.js')
 if (!isAdoExtension) {
   enumerated.perTaskInstall = 'n/a (no azure-devops-extension.json)'
 } else if (!fs.existsSync(forEachTask)) {
-  enumerated.perTaskInstall = 'missing'
-  fail('install', 'scripts/for-each-task.js', 'not found — the per-task install this gate exists to check is absent')
+  // WHERE the per-task install is declared is not the property; that it refuses
+  // dependency scripts is. Three extension repos declare it three ways:
+  //
+  //   release-docs  scripts/for-each-task.js, `const ACTIONS = {`, npm() helper
+  //   terraform     scripts/for-each-task.js, `const COMMANDS = {`, shell string
+  //   packer        package.json scripts, `npm --prefix <task> ci ...`
+  //
+  // Demanding scripts/for-each-task.js made packer permanently red for having a
+  // different -- and working -- declaration site. That is the same mistake as
+  // slicing on `const ACTIONS = {`: asserting an implementation and calling it a
+  // property, which a repo can only satisfy by restructuring code to suit the
+  // matcher. So package.json is checked when the script is absent, and the
+  // declaration site is RECORDED either way.
+  const pkgPath = path.join(ROOT, 'package.json')
+  let perTask = []
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
+      perTask = Object.entries(pkg.scripts || {}).filter(([, v]) => /npm\s+--prefix\s+\S+\s+ci\b/.test(v))
+    } catch {
+      fail('install', 'package.json', 'is not parseable, so the per-task install cannot be checked')
+    }
+  }
+  if (!perTask.length) {
+    enumerated.perTaskInstall = 'missing'
+    fail('install', 'per-task install', 'no per-task `npm ci` found in scripts/for-each-task.js or in package.json scripts — the install this gate exists to check is absent')
+  } else {
+    enumerated.perTaskInstall = `package.json (${perTask.length} script(s))`
+    for (const [name, cmd] of perTask) {
+      enumerated.installs++
+      if (!/--ignore-scripts/.test(cmd)) {
+        fail(
+          'install',
+          `package.json:${name}`,
+          'runs a per-task `npm ci` without --ignore-scripts. The root install is hardened and this one is not, ' +
+            'which is where third-party task dependencies actually live — and the release build copies each task ' +
+            'directory into the packaged .vsix afterwards (#21)',
+        )
+      }
+    }
+  }
 } else {
   enumerated.perTaskInstall = 'checked'
   const source = fs.readFileSync(forEachTask, 'utf8')
