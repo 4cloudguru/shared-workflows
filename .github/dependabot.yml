@@ -9,6 +9,17 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # A new release is not proposed until it has existed for a week.
+    #
+    # zizmor flags the absence of this, and is right to point it at THIS repo in
+    # particular: every action here is pinned by SHA and executes inside six
+    # other repositories' CI. Without a cooldown, a compromised upstream release
+    # reaches a pull request here within hours of publication, and the reviewer
+    # is looking at a SHA bump with no signal that the version is brand new.
+    # Seven days is not a guarantee; it is the window in which a hijacked
+    # release is usually withdrawn.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     commit-message:
       prefix: chore(ci)
