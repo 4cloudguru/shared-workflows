@@ -45,8 +45,15 @@ everywhere at once.**
 jobs:
   release-please:
     uses: 4cloudguru/shared-workflows/.github/workflows/release-please.yml@<full-sha>
-    secrets: inherit
+    secrets:
+      RELEASE_DISPATCH_APP_KEY: ${{ secrets.RELEASE_DISPATCH_APP_KEY }}
 ```
+
+**Name the secrets; do not use `secrets: inherit`.** Inheriting forwards *every*
+secret in the calling repository to a workflow in a different owner's
+repository. `zizmor` flags it (`secrets-inherit`), and it would be an odd
+over-grant to introduce via workflows whose purpose is least privilege — which
+is exactly what the first draft of this did, and what the linter caught.
 
 `vars` resolves against the **caller's** repository, so per-repo values such as
 `RELEASE_DISPATCH_APP_ID` stay where they are and nothing about App installations

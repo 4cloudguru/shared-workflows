@@ -26,7 +26,14 @@
 #   jobs:
 #     release-please:
 #       uses: 4cloudguru/shared-workflows/.github/workflows/release-please.yml@<sha>
-#       secrets: inherit
+#       secrets:
+#         RELEASE_DISPATCH_APP_KEY: ${{ secrets.RELEASE_DISPATCH_APP_KEY }}
+#
+# Name the secret. `secrets: inherit` forwards EVERY secret in the calling
+# repository to a workflow in another owner's repository -- zizmor flags it
+# (secrets-inherit), and it is a strange over-grant to introduce through a
+# workflow whose purpose is least privilege. The first draft of this did
+# exactly that and the linter caught it.
 #
 # Pin by SHA, not by a moving ref. A shared workflow is itself a thing that can
 # drift -- repos on different pins is the same defect wearing a new hat, and
@@ -52,7 +59,7 @@ on:
       RELEASE_DISPATCH_APP_KEY:
         description: >-
           The GitHub App private key. Declared by its real name rather than
-          aliased, so `secrets: inherit` at the call site satisfies it and
+          aliased so the caller can pass it explicitly by that name, and so
           actionlint can type-check the reference below -- a reusable workflow
           only has the secrets it DECLARES in scope, so an undeclared fallback
           reference would never resolve at runtime even though it reads fine.
