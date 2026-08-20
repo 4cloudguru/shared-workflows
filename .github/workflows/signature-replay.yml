@@ -478,6 +478,84 @@ jobs:
           token: "${{ steps.suite-read.outputs.token }}"
           path: security-orchestration
 
+      # REVOKE BEFORE RUNNING ANYTHING THIS REPLAY CHECKED OUT.
+      #
+      # This job holds an App token that can read the PRIVATE
+      # security-orchestration repository, and the steps after it execute
+      # repo-committed gate scripts from sixteen repositories -- which are
+      # exactly the thing under test. The token must be dead before any of them
+      # runs (#32).
+      #
+      # ONLY azure-pipelines-release-docs did this. The other fifteen copies ran
+      # every one of those scripts with the token still live. Carried up here
+      # rather than left in the one repo that had thought of it.
+      #
+      # The verification loop below is deliberate: revocation is not instant
+      # across GitHub's read path, so a single 200 cannot tell "not yet
+      # propagated" from "not revoked". Sampling until it stops reading
+      # distinguishes them instead of hiding either.
+      - name: Revoke the installation token before any repo-committed code runs
+        if: steps.suite-read.outputs.token != ''
+        env:
+          SUITE_READ_TOKEN: "${{ steps.suite-read.outputs.token }}"
+        run: |
+          set -euo pipefail
+          revoked=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: token ${SUITE_READ_TOKEN}" \
+            https://api.github.com/installation/token)
+          if [ "$revoked" != "204" ]; then
+            echo "::error::Revoking the security-orchestration installation token returned HTTP ${revoked}, not 204." \
+                 "The replay runs repo-committed gate scripts from fifteen repositories and must not do so while that" \
+                 "token is live (#32)."
+            exit 1
+          fi
+          # The DELETE above is authoritative; this GET only proves it took effect.
+          # Revocation is not instantaneous across GitHub's read path, so a 200 here
+          # can mean "not yet propagated" rather than "not revoked" -- and the two are
+          # indistinguishable from a single sample. Under estate-wide fan-out (~15
+          # replay jobs minting from one App installation at once) this step failed
+          # twice and passed on re-run with an identical workflow blob, which is the
+          # signature of propagation, not of a live token.
+          #
+          # So sample until it stops reading, rather than once. A propagation delay
+          # clears within a couple of attempts; a token that is genuinely still live
+          # keeps answering 200 and still fails the job. The retry distinguishes the
+          # two cases instead of hiding either.
+          still_reads=""
+          for attempt in 1 2 3 4; do
+            still_reads=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: token ${SUITE_READ_TOKEN}" \
+              https://api.github.com/repos/sethbacon/security-orchestration)
+            if [ "$still_reads" != "200" ]; then
+              break
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              echo "Token still reads security-orchestration ${attempt}s after DELETE 204; re-checking."
+              sleep "$attempt"
+            fi
+          done
+          if [ "$still_reads" = "200" ]; then
+            echo "::error::The installation token still reads sethbacon/security-orchestration after a 204 from" \
+                 "DELETE /installation/token and 4 attempts over ~6s. This is past any plausible propagation" \
+                 "delay: the revocation is not doing what this job depends on it doing."
+            exit 1
+          fi
+          echo "Installation token revoked (DELETE 204) and confirmed dead (GET ${still_reads}); everything below runs uncredentialed."
+
+      # NOW the commit under test enters the analysed tree — after the token is
+      # gone, not before. Guarded because `github.event.repository` is absent on
+      # schedule events: the path would collapse to `suite/` and dump this repo
+      # into the suite root. A scheduled run wants origin/main anyway, which the
+      # explicit checkout above already fetched.
+      #
+      # Deliberately NOT restricted to same-repository pull requests. A fork PR
+      # replayed against origin/main's copy of this repo would report on code it
+      # never read, and a required check that answers about the wrong tree is
+      # worse than one that cannot answer at all. The revocation above is the
+      # control; the checkout guard would only have been a way of not looking.
+
       # SELF-OVERWRITE, resolved from scope.json rather than guessed.
       #
       # Each copy of this workflow used to write the commit under test to
@@ -574,10 +652,35 @@ jobs:
 
       # Exit 1 or 2 already failed the step above; this keeps the machine-readable
       # report for the run someone will actually want to read.
+      - name: Ensure the installation token is revoked
+        if: always() && steps.suite-read.outputs.token != ''
+        env:
+          SUITE_READ_TOKEN: "${{ steps.suite-read.outputs.token }}"
+        run: |
+          curl -sS -o /dev/null -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: token ${SUITE_READ_TOKEN}" \
+            https://api.github.com/installation/token || true
+
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: signature-replay-report
           path: replay-report.json
+          # Bounded, and deliberately short.
+          #
+          # NOT a substitute for redaction. azure-pipelines-release-docs pipes
+          # the replay output through a redactor and uploads only the redacted
+          # copy, because the raw report carries content from the PRIVATE
+          # security-orchestration ledger and Actions artifacts inherit
+          # REPOSITORY read access -- on repos that are public. The other
+          # fifteen copies upload the raw report.
+          #
+          # That redactor lives in release-docs' own scripts/ and cannot be
+          # called from here, so this is the second control rather than the
+          # first one. The first one is still missing and is tracked separately;
+          # shortening the window is what can be done from a shared workflow
+          # today.
+          retention-days: 7
           if-no-files-found: warn
