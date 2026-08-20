@@ -1,0 +1,78 @@
+---
+# Reusable workflow-security lint: zizmor (security) + actionlint (schema).
+#
+# WHY BOTH, AND WHY TOGETHER
+#
+# zizmor lints workflows for SECURITY -- credential persistence, template
+# injection, over-broad permissions, unpinned actions. It does not check that a
+# workflow is a VALID GitHub Actions file, and that gap shipped a real outage:
+# removing a key left an empty `with:` behind, which is a schema error, and five
+# workflows across three repositories failed at STARTUP -- zero jobs, no logs,
+# and a run listed by file path instead of name because GitHub could not parse
+# far enough to read it. Both yaml.safe_load and zizmor accepted the file.
+#
+# A startup failure runs no jobs, so it cannot fail a required check either.
+# Nothing in the pipeline was in a position to notice. The two jobs belong
+# together because each is blind to what the other sees.
+#
+# WHY IT IS SHARED
+#
+# This file existed in six repositories. All six were byte-identical except for
+# ONE WORD in a comment -- and the odd copy was the correct one: it named
+# `cloud-suite-ui`, the repo that actually exists, while the other five named
+# `terraform-suite-ui`, which does not. Six copies, 77 lines, zero functional
+# variation, and the only divergence was a stale name propagating by copy.
+#
+# CALLING IT
+#
+#   jobs:
+#     workflow-security:
+#       uses: 4cloudguru/shared-workflows/.github/workflows/workflow-security.yml@<sha>
+#
+# No secrets and no inputs, so nothing is passed. Keep the triggers and the
+# concurrency group in the caller: they read `github.event_name` and
+# `github.head_ref`, which resolve to the caller's context, and leaving them
+# visible in each repo is what makes it obvious the lint actually runs there.
+name: Workflow Security (reusable)
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  zizmor:
+    name: Zizmor (workflow security lint)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          # SARIF upload to code scanning needs security-events: write, which
+          # this job deliberately does not hold. Findings surface as annotations
+          # on the diff instead, which is where the person who can fix them is.
+          advanced-security: false
+          annotations: true
+
+  actionlint:
+    name: Workflow schema (actionlint)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          # shellcheck/pyflakes are separate concerns and not installed here; the
+          # schema check is the part that prevents a startup failure.
+          ./actionlint -shellcheck= -pyflakes= -color
