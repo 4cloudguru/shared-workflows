@@ -70,11 +70,44 @@ on:
 permissions:
   contents: read
 
+# Concurrency groups are REPOSITORY-scoped, so this serialises release-please
+# per calling repo rather than across the estate. cancel-in-progress is false
+# deliberately: release-please opens and updates a release PR and pushes tags,
+# and cancelling it midway can leave the manifest and the PR disagreeing.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
 jobs:
   release-please:
     name: Release Please
     runs-on: ubuntu-latest
+    # This job mints an App token that can write contents and pull requests. A
+    # hung run holding that is worse than a failed one.
+    timeout-minutes: 15
     steps:
+      # Egress audit, carried UP from the callers rather than dropped.
+      #
+      # Three of the four 4cloudguru repos already ran harden-runner in their
+      # local release-please; the five sethbacon repos never did. Converting
+      # those three to a shared definition that lacked it would have SILENTLY
+      # REGRESSED them -- the consolidation quietly removing a control the repo
+      # already had. Folding it in here instead means all nine gain it.
+      #
+      # Pinned to v2.21.0 (05e3151), the newer of the two pins in circulation:
+      # the estate currently runs 61 uses of v2.20.1 and 21 of v2.21.0, which is
+      # its own drift and its own problem, but a shared definition should not
+      # adopt the older one.
+      #
+      # `audit` rather than `block`: this is the first time these five repos run
+      # it at all, and a blocking egress policy on a job that talks to the
+      # GitHub API and npm would fail closed on day one. Audit produces the
+      # baseline a block policy would need.
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
       - name: Get GitHub App token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: token
