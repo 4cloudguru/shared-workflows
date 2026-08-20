@@ -1,0 +1,10 @@
+# Every path, deliberately. A change to ANY file here executes inside the CI of
+# every repository that calls this one, so there is no low-stakes corner.
+#
+# Note this is currently advisory: branch protection sets
+# required_approving_review_count to 0, because the repo has a single
+# maintainer and a required review nobody can give is a lock, not a control.
+# The controls that DO bind are enforce_admins=true plus required status
+# checks — see SECURITY.md. This file exists so that the moment a second
+# maintainer is added, ownership is already stated rather than inferred.
+* @sethbacon
