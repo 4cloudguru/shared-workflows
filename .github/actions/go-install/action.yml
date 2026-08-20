@@ -1,0 +1,87 @@
+---
+name: Install a Go tool
+description: >-
+  go install a pinned Go tool, retrying transient module-proxy failures. Fails
+  loudly if every attempt fails -- a tool that did not install must not look
+  like a tool that found nothing.
+
+inputs:
+  package:
+    description: Fully qualified package with a version, e.g. github.com/swaggo/swag/cmd/swag@v1.16.4
+    required: true
+  attempts:
+    description: How many times to try before giving up.
+    required: false
+    default: "3"
+
+runs:
+  using: composite
+  steps:
+    - name: Install ${{ inputs.package }}
+      shell: bash
+      env:
+        PACKAGE: ${{ inputs.package }}
+        ATTEMPTS: ${{ inputs.attempts }}
+      run: |
+        set -uo pipefail
+
+        # WHY THIS EXISTS
+        #
+        # `go install pkg@version` reaches proxy.golang.org for the tool AND its
+        # whole dependency tree on every run. It is not covered by the module
+        # cache keyed on this repo's go.sum, because the tool is a different
+        # module. One transient read is enough to fail a required check:
+        #
+        #   golang.org/x/tools@v0.7.0: read "https://proxy.golang.org/...zip":
+        #   stream error: stream ID 4
+        #
+        # That is what took terraform-state-manager-backend's "Verify
+        # swagger.json is in sync" red on a PR containing zero Go changes. The
+        # check was reported and briefly believed to be swagger drift; it was a
+        # download. A flaky gate is worse than a missing one, because it teaches
+        # people to re-run rather than to read.
+        #
+        # The retry does NOT swallow failure. If every attempt fails the step
+        # exits non-zero and the job goes red, which is the whole point: a tool
+        # that never installed must not be mistaken for a tool that ran clean.
+
+        if [ -z "${PACKAGE}" ] || [ "${PACKAGE#*@}" = "${PACKAGE}" ]; then
+          echo "::error::package must be fully qualified with a version, got '${PACKAGE}'"
+          exit 2
+        fi
+
+        rc=1
+        for attempt in $(seq 1 "${ATTEMPTS}"); do
+          echo "::group::go install ${PACKAGE} (attempt ${attempt}/${ATTEMPTS})"
+          # Capture the exit status of `go install` ITSELF. Do not write this as
+          # `if go install ...; then ... fi` followed by `rc=$?`: a bash `if`
+          # whose condition is false and which has no `else` evaluates to 0, so
+          # `rc` would be 0 on every failed attempt and the final check below
+          # would never fire. That mistake makes this action report success for
+          # a tool that never installed -- the same shape as `continue-on-error`
+          # rewriting a failed step's conclusion, and strictly worse than having
+          # no retry at all. It was caught here by a mutation test that forces
+          # every attempt to fail and asserts the step goes red.
+          go install "${PACKAGE}"
+          rc=$?
+          echo "::endgroup::"
+          if [ "${rc}" -eq 0 ]; then
+            if [ "${attempt}" -gt 1 ]; then
+              echo "::notice::${PACKAGE} installed on attempt ${attempt} -- the earlier attempt(s) failed transiently."
+            fi
+            break
+          fi
+          if [ "${attempt}" -lt "${ATTEMPTS}" ]; then
+            backoff=$((attempt * 5))
+            echo "::warning::go install ${PACKAGE} failed (exit ${rc}); retrying in ${backoff}s"
+            sleep "${backoff}"
+          fi
+        done
+
+        if [ "${rc}" -ne 0 ]; then
+          echo "::error::go install ${PACKAGE} failed ${ATTEMPTS} time(s). This is NOT a transient blip -- treat it as a real failure (wrong version, module retracted, or a sustained proxy outage)."
+          exit "${rc}"
+        fi
+
+        echo "${PACKAGE} installed."
+        printf '%s\n' "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
