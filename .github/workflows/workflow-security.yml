@@ -63,9 +63,29 @@ jobs:
 
       - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
         with:
+          # Named rather than left to the action's `latest` default. `latest` is
+          # safe -- it is an alias inside a digest table frozen by the action's
+          # own SHA pin, not a tag resolved at runtime -- but it is illegible:
+          # the scanner version would appear nowhere in this repository, and
+          # bumping the action SHA would silently change which zizmor runs while
+          # the diff showed only an action bump. A zizmor change alters what a
+          # required check enforces in every consumer at once, so it should be a
+          # reviewable line rather than a side effect.
+          version: "1.29.0"
+          # DO NOT "simplify" this to the default. `advanced-security: true` is
+          # the action's default and selects `--format=sarif`, where zizmor
+          # EXITS 0 WHATEVER IT FINDS -- the gate silently becomes a reporter.
+          # A repository that took the default had a green required check
+          # sitting on four error-severity findings for as long as they existed
+          # (sethbacon/azure-pipelines-release-docs#79: the job log reads
+          # `::debug::zizmor exited with code 0` beside ten open alerts).
+          #
           # SARIF upload to code scanning needs security-events: write, which
           # this job deliberately does not hold. Findings surface as annotations
           # on the diff instead, which is where the person who can fix them is.
+          # A caller that also wants them recorded durably calls
+          # workflow-security-record.yml alongside this file; it cannot be an
+          # input here, for the reason written at the top of that file.
           advanced-security: false
           annotations: true
 
