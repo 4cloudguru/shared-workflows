@@ -44,7 +44,6 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      security-events: write
     steps:
       - name: Report
         run: echo "elevated ran -- NOT expected in this experiment"
