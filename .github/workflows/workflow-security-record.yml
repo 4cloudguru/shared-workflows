@@ -1,0 +1,95 @@
+---
+# Reusable: record zizmor's findings durably in the code scanning tab.
+#
+# WHY THIS IS A SEPARATE FILE AND NOT AN INPUT ON workflow-security.yml
+#
+# Recording needs `security-events: write`, and a called workflow's token is
+# capped by the CALLER's -- a reusable workflow cannot raise its own permissions.
+# The obvious shape, an `inputs.record-in-security-tab` flag gating a job inside
+# workflow-security.yml, does not work, and this was settled by experiment with a
+# control rather than reasoned about (4cloudguru/shared-workflows#18, #19):
+#
+#   | probe                                          | result            | jobs |
+#   | ---------------------------------------------- | ----------------- | ---: |
+#   | skipped job requests `security-events: write`  | `startup_failure` |    0 |
+#   | control -- that one line removed               | `success`         |    2 |
+#
+# A job's `permissions:` block is validated when the run is CREATED, before `if:`
+# is evaluated. A skipped job still has to fit under the caller's ceiling, so the
+# job existing at all would fail every caller that does not grant the permission
+# -- regardless of the input's value.
+#
+# And it would fail in the worst available way: a startup failure produces NO
+# JOBS, so it cannot fail a required check either. The context never appears,
+# which is indistinguishable from one still running.
+#
+# A caller that never writes `uses: .../workflow-security-record.yml` never
+# parses this file, so its permission block is never validated against that
+# caller's ceiling. Opting in is local and costs nobody else anything.
+#
+# THIS FILE DOES NOT BLOCK, AND MUST NOT BE USED ALONE
+#
+# `advanced-security: true` selects `--format=sarif`, where zizmor EXITS 0
+# WHATEVER IT FINDS. That is correct here -- the job's purpose is to upload the
+# SARIF, and a findings-fail-the-upload-step gate would leave the tab stale
+# exactly when it matters -- but it means this job is a REPORTER, not a gate.
+#
+# Call it ALONGSIDE workflow-security.yml, never instead of it. That file runs
+# the same scanner with `advanced-security: false`, where zizmor's own exit code
+# stands and a finding fails the job. Together they give the two properties
+# neither has alone: findings block the pull request, and they persist in the
+# security tab where one can be dismissed with a reason that outlives the run.
+#
+# CALLING IT
+#
+#   jobs:
+#     workflow-security:
+#       uses: 4cloudguru/shared-workflows/.github/workflows/workflow-security.yml@<sha>
+#     workflow-security-record:
+#       permissions:
+#         contents: read
+#         security-events: write
+#       uses: 4cloudguru/shared-workflows/.github/workflows/workflow-security-record.yml@<sha>
+#
+# The permission is granted at the caller's `uses:` site because that is the only
+# place it can be: this file cannot raise it, and the caller has to consent to it.
+name: Workflow Security Record (reusable)
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    name: Zizmor (record findings)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # The whole reason this file is separate. See the header.
+      security-events: write
+    steps:
+      # hardening-exception: egress-audit — this job clones the calling repository
+      #   and runs a container-based scanner over it; harden-runner has no endpoint
+      #   baseline for the callers of this workflow, and a block policy written
+      #   without one fails closed on its first run; audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          # Kept in step with workflow-security.yml deliberately: the two jobs
+          # must scan with the SAME scanner, or the tab records findings from a
+          # different version than the one gating the pull request.
+          version: "1.29.0"
+          # true here, false there -- the difference IS the division of labour.
+          # This uploads SARIF and therefore exits 0 regardless of findings; the
+          # other file is what makes a finding fail.
+          advanced-security: true

@@ -35,6 +35,17 @@ jobs:
   workflow-security:
     uses: ./.github/workflows/workflow-security.yml
 
+  # The recording half, exercised here because its whole design turns on a
+  # permission interaction that only shows up when a caller actually grants it.
+  # If this file did not call it, the first repository to try would be finding
+  # out whether the shape works -- which is the failure this repository exists to
+  # take on itself first.
+  workflow-security-record:
+    permissions:
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/workflow-security-record.yml
+
   # This repository publishes the workflow-hardening gate and did not run it.
   # Pointed at itself it reported six findings: two jobs with no timeout, two
   # never reaching harden-runner, and two harden-runner steps on audit with no
