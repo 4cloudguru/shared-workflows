@@ -36,7 +36,18 @@
 name: Workflow Security (reusable)
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      ref:
+        description: |
+          The commit to scan. Defaults to the ref that triggered the run.
+
+          A caller validating a SPECIFIC commit -- a release job checking the
+          artefact it is about to publish -- has to pass it. Without it the scan
+          reads whatever the run's default checkout resolves to, which is
+          usually the same commit and not reliably so.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -59,6 +70,7 @@ jobs:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
 
       - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
@@ -106,6 +118,7 @@ jobs:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
       - name: Install actionlint
         # Downloads the release asset and verifies it against actionlint's own
