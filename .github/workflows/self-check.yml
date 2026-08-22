@@ -88,3 +88,10 @@ jobs:
 
       - name: Footer guard self-test
         run: node tests/test-breaking-change-footers.js
+
+      # This repository publishes check-workflow-hardening.cjs to three
+      # extensions and had no test for it; the only mutation proof in the estate
+      # sat in one consumer, against that consumer's own older copy. It runs here
+      # now, beside the gate it proves.
+      - name: Workflow-hardening gate self-test
+        run: node tests/test-workflow-hardening.js

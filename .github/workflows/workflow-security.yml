@@ -149,3 +149,28 @@ jobs:
           # shellcheck/pyflakes are separate concerns and not installed here; the
           # schema check is the part that prevents a startup failure.
           ./actionlint -shellcheck= -pyflakes= -color
+
+      # Same contract this repository applies to its node gates: prove the linter
+      # still rejects something before believing its green. The fixture lives
+      # outside the checkout so the run above never sees it, and it carries a
+      # defect zizmor does not look for -- an unknown runner label.
+      - name: actionlint detects a broken workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          mkdir -p "$work/.github/workflows"
+          cat > "$work/.github/workflows/broken.yml" <<'YAML'
+          name: broken
+          on: push
+          jobs:
+            broken:
+              runs-on: ubunut-latest
+              steps:
+                - run: echo hello
+          YAML
+          if ./actionlint -no-color "$work/.github/workflows/broken.yml"; then
+            echo "actionlint accepted a workflow it should have rejected -- this gate proves nothing"
+            exit 1
+          fi
+          echo "actionlint rejected the broken fixture, as a working linter must"
