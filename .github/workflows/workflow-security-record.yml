@@ -56,7 +56,15 @@
 name: Workflow Security Record (reusable)
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      ref:
+        description: |
+          The commit to scan. Defaults to the ref that triggered the run. Keep it
+          in step with the ref passed to workflow-security.yml, or the tab
+          records findings from a different commit than the one gating.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -81,6 +89,7 @@ jobs:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
 
       - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
