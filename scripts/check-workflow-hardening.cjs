@@ -45,6 +45,16 @@
 //      quoted, which turns a repository directory name into cmd.exe input. So
 //      both directions are checked — no wrapper literal, and the spawn is
 //      `process.execPath` with no `shell:`.
+//   5. SCRIPT-REF COUPLING. A caller of `workflow-hardening.yml` passes
+//      `script-ref`, the commit the checker is taken from, and the workflow's
+//      own docs say it MUST equal the SHA on the `uses:` line beside it. That
+//      property is exactly this file's defect class: true in all 19 consumers
+//      today, enforced by nothing. It is also a property Dependabot cannot
+//      maintain — it rewrites `uses:` lines and knows nothing of workflow
+//      inputs, so its bump moves one and not the other and the PR goes green.
+//      Two such PRs were open when this was written. A skewed pair runs the new
+//      workflow against the old checker: the gate still passes, while enforcing
+//      something other than what the diff said.
 //   3. TIMEOUTS. Every job declares `timeout-minutes`. Without one, a hung or
 //      deliberately-stalled job holds the runner — and whatever credential it
 //      minted — for the platform default of six hours (#22). A job that is a
@@ -84,7 +94,7 @@ const ROOT = path.resolve(process.argv.filter((a) => a !== '--json')[2] || path.
 const findings = []
 const fail = (kind, where, message) => findings.push({ kind, where, message })
 
-const enumerated = { workflows: 0, jobs: 0, uses: 0, installs: 0, hardenRunners: 0, egressExceptions: 0, preHardenActionlessSteps: 0 }
+const enumerated = { workflows: 0, jobs: 0, uses: 0, installs: 0, hardenRunners: 0, egressExceptions: 0, preHardenActionlessSteps: 0, hardeningCalls: 0 }
 
 const EXCEPTION_MARKER = 'hardening-exception: egress-audit'
 const MIN_REASON_CHARS = 20
@@ -244,6 +254,40 @@ for (const file of workflowFiles) {
   })
 
   // ── 3 & 4. PER-JOB TIMEOUT AND EGRESS POLICY ──────────────────────────────
+  // ── 5. SCRIPT-REF COUPLING ────────────────────────────────────────────────
+  // Driven by the `uses:` rather than by the presence of a script-ref: a file
+  // that calls the hardening workflow and passes NO script-ref must fail too,
+  // and keying off script-ref would never look at it.
+  lines.forEach((line, index) => {
+    if (isComment(line)) return
+    const call = /uses:\s*4cloudguru\/shared-workflows\/\.github\/workflows\/workflow-hardening\.yml@([0-9a-f]{40})/.exec(line)
+    if (!call) return
+    enumerated.hardeningCalls++
+    const pinned = call[1]
+    const refs = lines
+      .map((l, i) => ({ l, i }))
+      .filter(({ l }) => !isComment(l) && /^\s*script-ref:\s*\S/.test(l))
+      .map(({ l, i }) => ({ value: /^\s*script-ref:\s*(\S+)/.exec(l)[1].replace(/^["']|["']$/g, ''), at: i + 1 }))
+
+    if (refs.length === 0) {
+      fail(
+        'script-ref',
+        `${rel}:${index + 1}`,
+        'calls workflow-hardening.yml but passes no `script-ref` — it is a required input, and the checker would be taken from an unstated commit'
+      )
+      return
+    }
+    for (const ref of refs) {
+      if (ref.value !== pinned) {
+        fail(
+          'script-ref',
+          `${rel}:${ref.at}`,
+          `\`script-ref\` is ${ref.value.slice(0, 8)} but the \`uses:\` pin beside it is ${pinned.slice(0, 8)} — the checker would come from a different commit than the workflow, so this gate would enforce something other than what the diff says. Dependabot rewrites the \`uses:\` line and not this one.`
+        )
+      }
+    }
+  })
+
   const jobs = parseJobs(lines)
   if (jobs.length === 0) {
     fail('vacuity', rel, 'no jobs parsed — the timeout and egress checks would pass over nothing for this file')
@@ -541,6 +585,7 @@ const summary =
   `${enumerated.installs} npm install invocation(s), ${enumerated.hardenRunners} harden-runner step(s), ` +
   `${enumerated.preHardenActionlessSteps} actionless step(s) ahead of a harden-runner, ` +
   `${enumerated.egressExceptions} recorded egress exception(s), ` +
+  `${enumerated.hardeningCalls} workflow-hardening call(s), ` +
   `per-task install: ${enumerated.perTaskInstall}` +
   `${enumerated.perTaskSpawn ? `, spawn: ${enumerated.perTaskSpawn}` : ''}.`
 
