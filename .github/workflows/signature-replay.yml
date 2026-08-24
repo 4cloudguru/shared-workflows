@@ -33,6 +33,11 @@
 # the job stops at the token step and goes red; it does not quietly skip the
 # replay, which is the only acceptable behaviour for a gate.
 #
+# That sentence is about a MISCONFIGURED repository and it still holds: a run
+# that could have had the key and does not goes red, here as before. It is not
+# about a FORK, which is a different thing wearing the same symptom, and the
+# `if:` on the job below is where the two are told apart. See it for why.
+#
 # A fine-grained PAT was tried first and cannot work here. Its resource owner is
 # fixed at one account, so a token owned by one account can never read a repo
 # owned by an org no matter how it is configured, and an org may cap or forbid
@@ -97,6 +102,33 @@ permissions:
 
 jobs:
   replay:
+    # FORK PRs, and the one case where not running IS the honest answer.
+    #
+    # A fork PR gets no secrets at all — not the Actions store, not the
+    # Dependabot one. `secrets.SUITE_READ_APP_KEY` resolves to the empty string,
+    # the token step fails, and the job goes red before a single signature runs.
+    # `replay` is a REQUIRED context in the consumer repos, so that is a context
+    # no external contributor can ever turn green: it reports the same red for a
+    # clean PR and a hostile one, and the only way past it is the admin bypass.
+    # A gate that can only be overridden teaches overriding.
+    #
+    # Red is also a LIE about what happened. Nothing was replayed and nothing
+    # failed; a credential was absent. Skipped says that, and GitHub counts
+    # `skipped` among the successful conclusions, so the required context is
+    # satisfiable rather than permanently unanswerable.
+    #
+    # WHAT COVERS THE GAP: the caller's `push: branches: [main]` trigger replays
+    # the merged code, and the daily `schedule` replays it again. A fork's code
+    # is therefore replayed — after the merge, by a human's decision to merge it,
+    # which is the review this gate was never the only layer of.
+    #
+    # Deliberately NOT `continue-on-error`, and deliberately not a missing-key
+    # check: both would swallow the misconfigured case above, where red is
+    # correct and is the whole point. This tests the ONE fact that separates
+    # them — whether the head repo is this repo — and nothing else.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
