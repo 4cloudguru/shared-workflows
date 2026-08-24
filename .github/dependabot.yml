@@ -1,4 +1,3 @@
----
 # The workflows here pin every action by full SHA, which is correct and is also
 # why this file is not optional: a SHA pin never updates itself, so without
 # Dependabot the pins rot silently and this repo becomes the estate's oldest
@@ -18,11 +17,13 @@ updates:
     # is looking at a SHA bump with no signal that the version is brand new.
     # Seven days is not a guarantee; it is the window in which a hijacked
     # release is usually withdrawn.
+      day: monday
+      time: "09:00"
+      timezone: UTC
     cooldown:
       default-days: 7
-    open-pull-requests-limit: 5
     commit-message:
-      prefix: chore(ci)
+      prefix: "chore(deps)"
     groups:
       actions:
         patterns: ["*"]
