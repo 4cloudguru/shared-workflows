@@ -30,6 +30,9 @@
 //   block-no-allowlist       `block` that names no endpoints             (#23)
 //   reusable-call-exempt     a workflow_call job needs no timeout        (pass)
 //   empty-workflows / empty-jobs   the vacuity contract, both ways
+//   script-ref-skewed        the pin and the checker disagreeing
+//   script-ref-absent        a required input silently omitted
+//   script-ref-matching      the coupling held, asserted as a pass
 //
 // Nothing is written under this repository's own .github/, which the gate reads
 // for real in the "Lint GitHub Actions" job.
@@ -366,6 +369,49 @@ try {
       fs.writeFileSync(path.join(dir, '.github', 'workflows', 'beta.yml'), '---\nname: Beta\n"on":\n  push:\n')
     },
     ['no jobs parsed'],
+  )
+
+  console.log('\nmutations — script-ref coupling:')
+  // `script-ref` names the commit the checker is taken from, and must equal the
+  // SHA on the `uses:` line beside it. Dependabot rewrites one and not the other
+  // and the resulting PR is green, so this is a property no bot can maintain and
+  // nothing was checking.
+  const CALLER = (usesSha, refLine) => `---
+name: Hardening
+"on":
+  push:
+    branches: [main]
+
+jobs:
+  workflow-hardening:
+    uses: 4cloudguru/shared-workflows/.github/workflows/workflow-hardening.yml@${usesSha} # v1.13.0
+    with:
+${refLine}
+`
+  const V13 = '9276df8e0bdb3152e2529ab98c8b99cfb9e22d4b'
+  const V161 = '8b7215beac6420881d20d52f9b096edff4238ec9'
+  const addCaller = (body) => (dir) =>
+    fs.writeFileSync(path.join(dir, '.github', 'workflows', 'hardening.yml'), body)
+
+  expectPass('script-ref-matching', addCaller(CALLER(V13, `      script-ref: ${V13}`)))
+  expectRejection(
+    'script-ref-skewed',
+    addCaller(CALLER(V13, `      script-ref: ${V161}`)),
+    ['script-ref', '8b7215be', '9276df8e'],
+  )
+  expectRejection(
+    'script-ref-absent',
+    addCaller(`---
+name: Hardening
+"on":
+  push:
+    branches: [main]
+
+jobs:
+  workflow-hardening:
+    uses: 4cloudguru/shared-workflows/.github/workflows/workflow-hardening.yml@${V13} # v1.13.0
+`),
+    ['passes no `script-ref`'],
   )
 } finally {
   fs.rmSync(workRoot, { recursive: true, force: true })
