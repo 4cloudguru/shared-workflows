@@ -33,6 +33,18 @@ inputs:
   repo:
     description: owner/repo the pull request belongs to.
     required: true
+  require-release-as:
+    description: >-
+      Fail a pull request that declares a breaking change without a
+      `Release-As:` footer naming the version to cut. Defaults to true.
+
+      Set this false only where a breaking change already bumps the version the
+      repository wants. terraform-suite-identity is the estate's one such case:
+      it is pre-1.0 with bump-minor-pre-major, so release-please bumps a
+      breaking change to a MINOR there already and a Release-As footer would be
+      restating what the configuration says.
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -43,6 +55,7 @@ runs:
         GH_TOKEN: ${{ inputs.gh-token }}
         PR_NUMBER: ${{ inputs.pr-number }}
         REPO: ${{ inputs.repo }}
+        REQUIRE_RELEASE_AS: ${{ inputs.require-release-as }}
       run: |
           set -euo pipefail
 
@@ -53,6 +66,7 @@ runs:
           report=""
           strays=0
           stray_report=""
+          release_as=0
           while IFS= read -r line; do
             [ -n "$line" ] || continue
             sha=$(jq -r '.sha' <<<"$line")
@@ -123,6 +137,17 @@ runs:
             if [ "$n" -gt 0 ]; then
               report="${report}  ${sha}  ${n} declaration(s)  ${subject}"$'\n'
             fi
+            # Release-As, counted here because $body is already decoded. Grepping
+            # commits.ndjson instead would be matching JSON-escaped text, where a
+            # footer on its own line reads as a literal backslash-n and the
+            # line-anchored form can never match at all.
+            #
+            # LINE-ANCHORED and case-insensitive: release-please reads it out of
+            # the body as a footer, so accepting one this guard can see but the
+            # parser would not is how a PR passes and still cuts a major.
+            if grep -qiE '^Release-As:[[:space:]]*[0-9]' <<<"$body"; then
+              release_as=$((release_as + 1))
+            fi
             if [ "$stray" -gt 0 ]; then
               strays=$((strays + stray))
               stray_report="${stray_report}  ${sha}  ${stray} off the start of a line  ${subject}"$'\n'
@@ -158,6 +183,59 @@ runs:
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::error::This PR has $strays breaking-change token(s) off the start of a line; release-please reads each one as a declaration. See the job summary."
             exit 1
+          fi
+
+          # A DECLARED BREAKING CHANGE NEEDS THE VERSION IT WILL CUT.
+          #
+          # Under conventional versioning a BREAKING CHANGE footer bumps the
+          # MAJOR. These are applications: nothing imports them, so there is no
+          # Go /vN import-path requirement and the major number is signalling.
+          # A release carrying one behaviour change does not announce a
+          # redesign, which is what took terraform-registry-backend from 3.5.2
+          # to 4.0.0 in an afternoon.
+          #
+          # The estate's answer is a Release-As footer naming the next minor, so
+          # the cap is a per-release decision rather than a repository-wide
+          # setting that also demotes every `fix:` to a minor. That convention
+          # only holds if somebody notices when it is missed — and a forgotten
+          # footer is invisible until the tag exists.
+          #
+          # LINE-ANCHORED, deliberately. release-please reads Release-As out of
+          # the commit body, and accepting one this guard can see but the parser
+          # would not is how a PR passes and still cuts a major. The same
+          # mistake in the other direction is what abacdb5 taught this file
+          # about the hyphenated token.
+          if [ "$total" -eq 1 ] && [ "${REQUIRE_RELEASE_AS:-true}" = "true" ]; then
+            if [ "$release_as" -eq 0 ]; then
+              {
+                echo "### A breaking change with no version to cut"
+                echo
+                echo "This pull request declares a breaking change and carries no"
+                echo '`Release-As:` footer, so release-please will bump the **major**.'
+                echo
+                echo "That is rarely what these repositories want. They are applications:"
+                echo "nothing imports them, there is no Go \`/vN\` requirement, and the major"
+                echo "number is signalling. A release carrying one behaviour change does not"
+                echo "announce a redesign."
+                echo
+                echo "Add a footer naming the next MINOR, on its own line:"
+                echo
+                echo '```'
+                echo "BREAKING CHANGE: ...what an operator must do..."
+                echo
+                echo "Release-As: <current-major>.<current-minor + 1>.0"
+                echo '```'
+                echo
+                echo "Read the current version with \`gh release list --limit 1\`."
+                echo
+                echo "**If a major IS intended** — a genuine redesign — say so in the PR and"
+                echo "set \`require-release-as: "false"\` on this step for that merge, or"
+                echo "cut the release manually."
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::This PR declares a breaking change with no Release-As footer; release-please will bump the major. See the job summary."
+              exit 1
+            fi
+            echo "OK: the breaking change names the version to cut."
           fi
 
           if [ "$total" -le 1 ]; then
