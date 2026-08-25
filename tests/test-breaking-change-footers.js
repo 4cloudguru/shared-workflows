@@ -149,7 +149,7 @@ fs.writeFileSync(
 );
 
 let fixtureSeq = 0;
-function runGuard(commits, stubDir = binDir) {
+function runGuard(commits, stubDir = binDir, requireReleaseAs = 'false') {
     const dir = path.join(workRoot, `case-${(fixtureSeq += 1)}`);
     fs.mkdirSync(dir);
     const fixture = path.join(dir, 'commits.json');
@@ -168,6 +168,7 @@ function runGuard(commits, stubDir = binDir) {
             PR_NUMBER: '123',
             REPO: 'sethbacon/azure-pipelines-terraform',
             GITHUB_STEP_SUMMARY: summary,
+            REQUIRE_RELEASE_AS: requireReleaseAs,
         },
     });
     return {
@@ -177,8 +178,8 @@ function runGuard(commits, stubDir = binDir) {
     };
 }
 
-function expectPass(label, commits, mustSay = []) {
-    const { status, output } = runGuard(commits);
+function expectPass(label, commits, mustSay = [], requireReleaseAs = 'false') {
+    const { status, output } = runGuard(commits, binDir, requireReleaseAs);
     if (status !== 0) {
         report(false, `${label}: exited ${status} on a PR it should accept\n${output}`);
         return;
@@ -191,8 +192,8 @@ function expectPass(label, commits, mustSay = []) {
     report(true, `${label}: exits 0${mustSay.length ? ` saying ${mustSay.map((w) => JSON.stringify(w)).join(' + ')}` : ''}`);
 }
 
-function expectRejection(label, commits, mustSay, mustSummarise = []) {
-    const { status, output, summary } = runGuard(commits);
+function expectRejection(label, commits, mustSay, mustSummarise = [], requireReleaseAs = 'false') {
+    const { status, output, summary } = runGuard(commits, binDir, requireReleaseAs);
     if (status === 0) {
         report(false, `${label}: exited 0 on a PR that would lose a breaking change\n${output}`);
         return;
@@ -394,6 +395,63 @@ try {
             'docs: describe it again\n\nmore prose naming BREAKING-CHANGE: twice',
         ],
         ['declarations in this PR: 2', 'off the start of a line'],
+    );
+
+    console.log('\na declared breaking change has to name the version it will cut:');
+    // THE CASE. Under conventional versioning a BREAKING CHANGE footer bumps the
+    // MAJOR, and for these applications that announces a redesign nobody did --
+    // terraform-registry-backend went 3.5.2 -> 4.0.0 in an afternoon that way.
+    // The estate's answer is a Release-As footer naming the next minor, and a
+    // convention nobody enforces is one somebody forgets on the release it
+    // mattered for.
+    expectRejection(
+        'breaking-without-release-as',
+        [`feat!: refuse an admin mapping with no user_id\n\n${FOOTER}`],
+        ['no Release-As footer'],
+        ['A breaking change with no version to cut', 'Release-As:'],
+        'true',
+    );
+    expectPass(
+        'breaking-with-release-as',
+        [`feat!: refuse an admin mapping with no user_id\n\n${FOOTER}\n\nRelease-As: 4.11.0`],
+        ['names the version to cut'],
+        'true',
+    );
+    // The footer may live in ANY commit of the PR: the squash concatenates every
+    // body into one and release-please reads the result.
+    expectPass(
+        'release-as-in-a-later-commit',
+        [`feat!: refuse an admin mapping\n\n${FOOTER}`, 'chore: pin the version to cut\n\nRelease-As: 4.11.0'],
+        ['names the version to cut'],
+        'true',
+    );
+    // A PR with no breaking change needs no Release-As, and demanding one would
+    // fire on almost every pull request in the estate.
+    expectPass(
+        'no-breaking-change-needs-no-release-as',
+        ['fix: correct the registry allowlist check'],
+        ['declarations in this PR: 0'],
+        'true',
+    );
+    // MID-LINE is not a footer. release-please reads Release-As out of the body
+    // as a footer, so accepting one it would NOT see is how a PR passes this
+    // guard and still cuts a major -- the same mistake abacdb5 taught this file
+    // about the hyphenated token, in the other direction.
+    expectRejection(
+        'release-as-mid-sentence-is-not-a-footer',
+        [`feat!: refuse an admin mapping\n\n${FOOTER}\n\nWe should probably add Release-As: 4.11.0 to this one.`],
+        ['no Release-As footer'],
+        [],
+        'true',
+    );
+    // The opt-out, for the one repository where a breaking change already bumps
+    // the version it wants: terraform-suite-identity is pre-1.0 with
+    // bump-minor-pre-major, so release-please cuts a MINOR there regardless.
+    expectPass(
+        'requirement-can-be-turned-off',
+        [`feat!: refuse an admin mapping\n\n${FOOTER}`],
+        ['at most one declaration'],
+        'false',
     );
 
     console.log('\nthe guard has to fail closed, not quiet:');
