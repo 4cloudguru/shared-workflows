@@ -1,0 +1,50 @@
+---
+# actionlint and zizmor are pinned in workflow-security.yml, and neither is a
+# dependency any package manager tracks -- so nothing proposes an upgrade and a
+# pin only moves if somebody remembers.
+#
+# azure-pipelines-terraform used to watch this with a weekly canary that grepped
+# its OWN unit-test.yml. Migrating that repo onto the shared workflow removed the
+# pins it was reading, so the canary went with them: its next run would have
+# failed with "Could not resolve the actionlint version pinned in unit-test.yml"
+# (#23). The check belongs where the pins now live, and one job here covers every
+# consumer at once -- which matters more than it did before, because a zizmor
+# bump changes what a REQUIRED check enforces in all of them simultaneously.
+#
+# Scheduled only, plus manual. Not on pull_request: a new upstream release would
+# then fail pull requests that have nothing to do with it. The reader's own logic
+# IS gated per-PR, by the self-test in self-check.yml.
+name: Tooling Version Drift
+
+"on":
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  tooling-version-drift:
+    name: Tooling version drift (actionlint, zizmor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      # hardening-exception: egress-audit — this job queries the GitHub releases
+      #   API and PyPI for the latest published versions, and clones this
+      #   repository; harden-runner has never run in this repository, so no
+      #   endpoint baseline exists and a block policy written without one fails
+      #   closed on its first run; audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Exit 2 is could-not-reach-upstream, and is deliberately NOT exit 0: a
+      # canary that could not ask has not found the pins current.
+      - name: Compare the pinned versions against their latest releases
+        run: node scripts/check-tooling-pins.cjs
