@@ -95,3 +95,9 @@ jobs:
       # now, beside the gate it proves.
       - name: Workflow-hardening gate self-test
         run: node tests/test-workflow-hardening.js
+      # The upstream comparison runs weekly in tooling-version-drift.yml; this
+      # is the logic behind it, exercised on every pull request. The canary this
+      # replaces died by reading pins that had moved, so the case that matters
+      # most is the one asserting that resolving NOTHING is a finding.
+      - name: Tooling pin reader self-test
+        run: node tests/test-tooling-pins.js
