@@ -425,6 +425,52 @@ try {
         ['names the version to cut'],
         'true',
     );
+    // THE #499 REGRESSION. A Release-As footer that is PRESENT but will not be a
+    // TRAILER after the squash is ignored by release-please, which then cuts the
+    // major that BREAKING CHANGE implies. This gate used to check presence, and
+    // presence passed while the version came out wrong.
+    //
+    // terraform-state-manager-backend#499 asked for 3.14.0 and produced a
+    // release PR for 4.0.0: the branch had a second commit whose body the squash
+    // appended after the footer.
+    expectRejection(
+        'release-as-buried-by-a-later-commit',
+        [
+            `feat!: require the caller's tenancy\n\n${FOOTER}\n\nRelease-As: 3.14.0`,
+            'test: cover the new branches\n\nThe scoped reader landed without tests.',
+        ],
+        ['will not be a trailer after the squash'],
+        ['The Release-As footer will not survive the squash'],
+        'true',
+    );
+    // The subtler half of the same bug: `Closes #439` has no colon, so it is not
+    // a trailer either. It ends the block just as surely as another commit does,
+    // and it sat after the footer in #499 too.
+    expectRejection(
+        'release-as-followed-by-a-closes-line',
+        [`feat!: require the caller's tenancy\n\n${FOOTER}\n\nRelease-As: 3.14.0\n\nCloses #439`],
+        ['will not be a trailer after the squash'],
+        ['The Release-As footer will not survive the squash'],
+        'true',
+    );
+    // The final paragraph must be TRAILERS, not merely contain the token. A
+    // paragraph mixing the footer with prose is not a trailer block, and
+    // release-please does not read it as one.
+    expectRejection(
+        'release-as-sharing-its-paragraph-with-prose',
+        [`feat!: require the caller's tenancy\n\n${FOOTER}\n\nRelease-As: 3.14.0\nSee the upgrade guide before deploying.`],
+        ['will not be a trailer after the squash'],
+        ['The Release-As footer will not survive the squash'],
+        'true',
+    );
+    // ...and the shape that fixed it: the footer LAST, after any Closes line.
+    expectPass(
+        'release-as-as-the-final-trailer',
+        [`feat!: require the caller's tenancy\n\n${FOOTER}\n\nCloses #439\n\nRelease-As: 3.14.0`],
+        ['names the version to cut'],
+        'true',
+    );
+
     // A PR with no breaking change needs no Release-As, and demanding one would
     // fire on almost every pull request in the estate.
     expectPass(

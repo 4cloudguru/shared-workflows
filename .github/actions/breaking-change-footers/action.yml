@@ -63,6 +63,7 @@ runs:
             --jq '.[] | {sha: .sha[0:7], msg: .commit.message}' > commits.ndjson
 
           total=0
+          squashed=""
           report=""
           strays=0
           stray_report=""
@@ -148,6 +149,17 @@ runs:
             if grep -qiE '^Release-As:[[:space:]]*[0-9]' <<<"$body"; then
               release_as=$((release_as + 1))
             fi
+            # Reconstruct the message the SQUASH will produce, because presence
+            # is not the property that decides the version -- position is.
+            #
+            # GitHub's COMMIT_MESSAGES squash emits the first commit's whole
+            # message, then `* <subject>` and body for each later commit. So a
+            # second commit lands AFTER an earlier commit's footers.
+            if [ -z "$squashed" ]; then
+              squashed="$msg"
+            else
+              squashed="${squashed}"$'\n\n'"* ${subject}"$'\n\n'"${body}"
+            fi
             if [ "$stray" -gt 0 ]; then
               strays=$((strays + stray))
               stray_report="${stray_report}  ${sha}  ${stray} off the start of a line  ${subject}"$'\n'
@@ -205,7 +217,60 @@ runs:
           # would not is how a PR passes and still cuts a major. The same
           # mistake in the other direction is what abacdb5 taught this file
           # about the hyphenated token.
+          # IS IT STILL A TRAILER AFTER THE SQUASH?
+          #
+          # release-please honours Release-As only in the message's TRAILER
+          # BLOCK -- the final paragraph, and only when that paragraph is
+          # `Key: Value` lines. Anywhere else it is prose and is ignored.
+          #
+          # Presence was the property this gate used to check, and presence is
+          # not enough. terraform-state-manager-backend#499 carried
+          # `Release-As: 3.14.0`, passed this gate, and release-please cut a
+          # release PR for 4.0.0 -- because the branch had a second commit whose
+          # body the squash appended after the footer, and because `Closes #439`
+          # sat after it too. `Closes #NNN` has no colon, so it is not a trailer
+          # either: it ends the block just as surely as another commit's body.
+          #
+          # So the check is on the RECONSTRUCTED squash, not on any one commit.
+          release_as_is_trailer=0
+          if [ -n "$squashed" ]; then
+            # The final paragraph: everything after the last blank line.
+            final_block=$(printf '%s\n' "$squashed" | awk 'BEGIN{RS=""} END{print}')
+            if grep -qiE '^Release-As:[[:space:]]*[0-9]' <<<"$final_block"; then
+              # ...and that paragraph must be trailers only, or it is prose that
+              # merely happens to start with the token.
+              if ! grep -qvE '^[A-Za-z][A-Za-z0-9-]*:[[:space:]]' <<<"$(grep -v '^[[:space:]]*$' <<<"$final_block")"; then
+                release_as_is_trailer=1
+              fi
+            fi
+          fi
+
           if [ "$total" -eq 1 ] && [ "${REQUIRE_RELEASE_AS:-true}" = "true" ]; then
+            if [ "$release_as" -gt 0 ] && [ "$release_as_is_trailer" -eq 0 ]; then
+              {
+                echo "### The Release-As footer will not survive the squash"
+                echo
+                echo 'This pull request has a `Release-As:` footer, but it will NOT be in the'
+                echo "merged commit's trailer block, so release-please will ignore it and cut"
+                echo "the **major** that \`BREAKING CHANGE\` implies."
+                echo
+                echo "This repository squashes with COMMIT_MESSAGES, so the merged message is"
+                echo "every commit body concatenated in order. Anything after the footer ends"
+                echo "the trailer block -- a later commit's body, or even a \`Closes #123\` line,"
+                echo "which has no colon and is therefore not a trailer."
+                echo
+                echo "The final paragraph of the merged commit would be:"
+                echo
+                echo '```'
+                printf '%s\n' "$final_block"
+                echo '```'
+                echo
+                echo "Put \`Release-As:\` in the LAST commit, as the last footer -- after any"
+                echo "\`Closes\` line. Amend it into the final commit, or repeat it there."
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::This PR's Release-As footer will not be a trailer after the squash, so release-please will ignore it. See the job summary."
+              exit 1
+            fi
             if [ "$release_as" -eq 0 ]; then
               {
                 echo "### A breaking change with no version to cut"
