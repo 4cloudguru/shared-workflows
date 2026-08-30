@@ -271,11 +271,23 @@ runs:
         # true` on the grade, a publish step, then a third step re-asserting
         # `steps.grade.outcome != 'success'` -- because `continue-on-error`
         # rewrites a step's CONCLUSION to `success` and only `outcome` still
-        # holds the truth. That shape is unavailable here (`continue-on-error` is
-        # not a supported key on a composite step) and it was also a shape only a
-        # TEXT assertion could test. Collapsed into one shell body the exit code
-        # cannot be laundered, and the publish-then-fail ordering is EXECUTABLE by
-        # the self-test rather than merely asserted about the YAML.
+        # holds the truth. That shape IS available here: `continue-on-error` is a
+        # documented key on a composite step, and `steps.<id>.outcome` is
+        # readable from a later step in the same action. It was checked rather
+        # than assumed, because an earlier draft of this comment asserted the
+        # opposite and was wrong.
+        #
+        # It is not used, for two reasons that are about the shape and not about
+        # availability. First, `continue-on-error` is a live footgun this estate
+        # has already been bitten by: it laundered a failed step into a green
+        # conclusion, and the only surviving truth was in `outcome`, which the
+        # API does not return. Reintroducing it here would mean re-documenting
+        # the trap in every consumer rather than removing it. Second, a
+        # three-step shape can only be proven by TEXT assertions against the
+        # YAML -- which is exactly how the source's version was covered, and why
+        # its publish-then-fail ordering was described and never run. Collapsed
+        # into one shell body the exit code cannot be laundered, and the ordering
+        # is EXECUTED by the self-test.
         #
         # The pull request NUMBER is passed as well as the body, because the body
         # is only the secondary signal: the authoritative set of issues this merge
