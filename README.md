@@ -72,6 +72,54 @@ That is a claim worth enforcing rather than documenting, which is why a
 pin-parity signature belongs alongside this repo rather than a note in a README
 asking people to remember.
 
+## Composite actions here
+
+Two guards live in `.github/actions/` rather than `.github/workflows/`, and the
+reason is the same for both: **a reusable workflow reports as
+`<caller-job-id> / <called-job-name>`, which renames the check.** Both are
+required status contexts somewhere in the estate, and a required context that
+gets renamed silently stops being required — a failure mode where a gate stops
+existing and nothing notices. A composite action is called as a **step** inside
+the caller's existing job, so the job keeps its name and no branch protection
+moves.
+
+| action | what it refuses | required in |
+| --- | --- | --- |
+| [`breaking-change-footers`](.github/actions/breaking-change-footers/) | a squash that would drop a second breaking-change declaration, or prose release-please reads as one nobody wrote | `azure-pipelines-release-docs` |
+| [`release-pr-closing-keywords`](.github/actions/release-pr-closing-keywords/) | a release pull request that would close an issue the release does not complete | `terraform-state-manager-backend` |
+
+### The release-PR closing-keyword guard
+
+release-please renders **every** issue reference a commit carries as
+`closes [#N](...)` in the changelog — including a line-initial `Refs #N` written
+deliberately to link a tracking issue *without* closing it. GitHub parses that
+body into its **linked-issue graph**, and merging closes everything in the
+graph. The word the author chose is discarded. It fired three times in
+`terraform-state-manager-backend`, which was the only one of **seven**
+release-please repositories with a guard for it.
+
+It grades `closingIssuesReferences` over GraphQL — GitHub's own answer to "what
+does merging this close?" — and not body text, because an issue attached through
+the **Development panel** closes on merge with no body text at all. The body scan
+is a clearly-labelled secondary signal.
+
+Three modes, and they are not the same kind of thing:
+
+- `pull-request` — the required context. Grades the pull request and publishes a
+  commit status on the head SHA.
+- `link-regrade` — a `schedule` tick that re-grades every open pull request
+  against the live link graph. `connected` is not an activity type on **any**
+  webhook, so a Development-panel link fires nothing and no event-driven check
+  can see it; looking again on a clock bounds that window rather than closing it.
+- `merge-backstop` — a `push` grade of the merge instant that **reopens** what a
+  release closed by mistake. It cannot prevent the close; it removes the part
+  that did the damage, which was silence.
+
+**Adopting it:** [`docs/release-pr-guard-adoption.md`](docs/release-pr-guard-adoption.md).
+**What it does not close:** [`docs/release-pr-guard-residual.md`](docs/release-pr-guard-residual.md)
+— read this one first. Two of its limits are settings on the consuming
+repository, and while `enforce_admins` is `false` the guard binds nobody.
+
 ## Tenancy model (estate-wide)
 
 The suite is moving to an explicit tenancy model: **the host is the content tenant**
