@@ -1,0 +1,344 @@
+---
+name: Release PR closing-keyword guard
+description: >-
+  Fail a release-please pull request that would close an issue the release does
+  not complete, re-grade open release pull requests against the live linked-issue
+  graph, and reopen anything a merged release closed by mistake.
+
+# WHAT THE DEFECT IS.
+#
+# release-please renders EVERY issue reference a commit carries as
+# `closes [#N](...)` in the changelog, including a line-initial `Refs #N` trailer
+# written deliberately to link a tracking issue WITHOUT closing it. That
+# changelog is the release pull request body; GitHub parses the body into its
+# LINKED-ISSUE GRAPH (`closingIssuesReferences`); and merging the pull request
+# closes everything in that graph. The non-closing word the author chose is
+# discarded, and the next release closes the issue anyway.
+#
+# There is no configuration fix. The verb is hardcoded in the commit partial of
+# `conventional-changelog-conventionalcommits`; release-please's config schema
+# exposes changelog-sections, changelog-type, changelog-path and changelog-host
+# and nothing that reaches `commitPartial`. Upstream fixed it IN THE LIBRARY in
+# release-please 17.10.4 by rewriting the verb unconditionally, but
+# release-please-action v5.0.0 bundles release-please 17.6.0 and the action's own
+# main branch is on 17.6.1 -- no reachable action pin carries the fix. A config
+# change would be a change that does nothing while looking like one.
+#
+# It fired three times in sethbacon/terraform-state-manager-backend, which is the
+# only repository that had this guard. Six more release-please repositories did
+# not, which is why it is here.
+#
+# ── WHY THIS IS A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW ──────────────
+#
+# Same reason recorded on `breaking-change-footers`, and it is load-bearing for
+# exactly one of the three modes below.
+#
+# A reusable workflow reports as `<caller-job-id> / <called-job-name>`, which
+# RENAMES the check. `Release PR closes only what it completes` is a REQUIRED
+# status context on sethbacon/terraform-state-manager-backend's `main` --
+# re-verified against the protection API on 2026-08-30, where it is one of
+# ELEVEN required contexts alongside `Release-PR guard self-test`. Converting
+# that job to a reusable workflow would silently stop a required check from ever
+# reporting, and a required context that never appears is indistinguishable from
+# one still running.
+#
+# A composite action is called as a STEP inside the caller's existing job, so the
+# job keeps its name and the check keeps reporting under the name branch
+# protection already knows. No branch protection moves.
+#
+# ── WHY link-regrade AND merge-backstop ARE IN THIS SAME ACTION ─────────────
+#
+# They are NOT required contexts anywhere, so the rename hazard above does not
+# apply to them, and they could have been a reusable workflow. They are not, and
+# the reason is skew.
+#
+# All three modes run the SAME `evaluate()`. That is the design's central claim:
+# `merge-backstop.mjs` grades the merge instant by calling `verify.mjs`'s
+# `evaluate()` with two injected differences, so "the grading logic cannot drift
+# between the two callers". A reusable workflow in this repository cannot reach
+# its own repository's scripts; the established pattern beside this file
+# (`workflow-hardening.yml`) solves that with a `script-ref` input the caller
+# must keep equal to the SHA on its `uses:` line. That coupling is real enough
+# that `scripts/check-workflow-hardening.cjs` has a rule for it -- rule 5 -- and
+# that rule's regex names `workflow-hardening.yml` LITERALLY, so it would not
+# police a new pair.
+#
+# Split across a composite action (files from `github.action_path`, pinned by
+# construction to the SHA on the `uses:` line) and a reusable workflow (files
+# from a hand-passed `script-ref`), the pre-merge guard and the after-the-fact
+# backstop could be running DIFFERENT CODE in a consumer, with nothing to notice.
+# One action, one `github.action_path`, one SHA makes that impossible rather than
+# detectable. The consumer still owns the job name, triggers and permissions --
+# which it must, because the three modes need three different permission sets.
+#
+# ── WHAT A CONSUMER MUST DO ────────────────────────────────────────────────
+#
+# See docs/release-pr-guard-adoption.md for the workflow to copy, and
+# docs/release-pr-guard-residual.md for what this guard does NOT close. Adopting
+# it is a separate pull request per consumer; nothing in this repository turns it
+# on anywhere.
+
+inputs:
+  mode:
+    description: >-
+      Which half of the guard to run. `pull-request` grades an open pull request
+      and publishes a commit status; `link-regrade` re-grades every open pull
+      request against the live link graph (schedule); `merge-backstop` grades a
+      merge that already happened and reopens what it closed by mistake (push).
+
+      An unrecognised value FAILS. A mode that matched no step would run no step,
+      and a composite action that ran no step is a green one.
+    required: true
+  gh-token:
+    description: >-
+      Token for `gh`. `pull-request` needs pull-requests:read, issues:read and
+      statuses:write; `link-regrade` the same; `merge-backstop` needs
+      pull-requests:read and issues:WRITE, because reopening is the repair and
+      the reason that mode exists.
+    required: true
+  repo:
+    description: owner/repo the pull request belongs to. Pass `${{ github.repository }}`.
+    required: true
+  pr-number:
+    description: The pull request number. Required when mode is `pull-request`.
+    required: false
+    default: ""
+  merge-sha:
+    description: >-
+      The merge commit to grade. Required when mode is `merge-backstop`; pass
+      `${{ github.sha }}`.
+    required: false
+    default: ""
+  status-context:
+    description: >-
+      The commit-status context both `pull-request` and `link-regrade` publish
+      under. Branch protection grades a CONTEXT ON THE HEAD SHA and nothing else,
+      so the two must share one name: that is what lets the scheduled re-grade
+      overwrite the pull-request-time pass. The last status posted for a context
+      is the one protection reads.
+
+      Deliberately NOT the check-run name of the job calling this action. A check
+      run and a commit status sharing one context is ambiguous to branch
+      protection, and ambiguity in a guard is the failure this exists to remove.
+    required: false
+    default: release-guard/link-regrade
+  base-branch:
+    description: >-
+      The branch releases target. Used by `link-regrade` for both derivations of
+      its universe. Was a literal `main` in two places in the source.
+    required: false
+    default: main
+  release-branch-prefix:
+    description: >-
+      The head-branch prefix release-please creates. Every mode short-circuits on
+      a branch that does not start with it. Parameterised because a consumer can
+      change it in its manifest config, and a prefix that matched nothing would
+      report "nothing to check" on every release forever -- a clean-looking
+      result over an empty universe.
+    required: false
+    default: release-please--branches--
+
+runs:
+  using: composite
+  steps:
+    # FAIL-CLOSED ON THE WIRING ITSELF. Every other floor in this guard turns a
+    # checker that cannot see into a checker that fails; this one covers the
+    # layer above them. A typo in `mode`, or a `pull-request` call with no
+    # `pr-number`, would satisfy no `if:` below, run nothing, and report success
+    # -- the vacuous green this whole cluster of work exists to remove, arriving
+    # through the one door none of the modules can watch.
+    - name: Check the action was called with a mode it implements
+      id: contract
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        REPO: ${{ inputs.repo }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        MERGE_SHA: ${{ inputs.merge-sha }}
+        STATUS_CONTEXT: ${{ inputs.status-context }}
+        BASE_BRANCH: ${{ inputs.base-branch }}
+        RELEASE_BRANCH_PREFIX: ${{ inputs.release-branch-prefix }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+
+        [ -n "$REPO" ] || { echo "::error::repo is required." >&2; exit 1; }
+        [ -n "$RELEASE_BRANCH_PREFIX" ] || { echo "::error::release-branch-prefix must not be empty; an empty prefix matches every branch." >&2; exit 1; }
+
+        # The modules have to actually be here. `github.action_path` is the whole
+        # mechanism that pins the implementation to the SHA on the caller's
+        # `uses:` line, and if it ever resolves somewhere without these files the
+        # failure should say so rather than surfacing as a node stack trace.
+        for f in verify.mjs merge-backstop.mjs link-regrade.sh trailer-intents.mjs closing-refs.mjs; do
+          [ -f "$ACTION_PATH/$f" ] || { echo "::error::$f is missing from the action at '$ACTION_PATH'." >&2; exit 1; }
+        done
+
+        case "$MODE" in
+          pull-request)
+            [ -n "$PR_NUMBER" ] || { echo "::error::mode=pull-request requires pr-number." >&2; exit 1; }
+            [ -n "$STATUS_CONTEXT" ] || { echo "::error::mode=pull-request requires status-context." >&2; exit 1; }
+            ;;
+          link-regrade)
+            [ -n "$STATUS_CONTEXT" ] || { echo "::error::mode=link-regrade requires status-context." >&2; exit 1; }
+            [ -n "$BASE_BRANCH" ] || { echo "::error::mode=link-regrade requires base-branch." >&2; exit 1; }
+            ;;
+          merge-backstop)
+            [ -n "$MERGE_SHA" ] || { echo "::error::mode=merge-backstop requires merge-sha." >&2; exit 1; }
+            ;;
+          *)
+            echo "::error::Unknown mode '$MODE'." >&2
+            echo "This action implements pull-request, link-regrade and merge-backstop." >&2
+            echo "A mode that matches no step runs NO step, and a composite action that ran" >&2
+            echo "no step reports success -- which is the vacuous pass this guard exists to" >&2
+            echo "remove. So an unrecognised mode fails instead of being skipped." >&2
+            exit 1
+            ;;
+        esac
+        echo "release-pr-closing-keywords: mode=$MODE, repo=$REPO"
+
+    # ── mode: pull-request ─────────────────────────────────────────────────
+    #
+    # Runs on EVERY pull request the caller points it at, not only release ones,
+    # and posts a status for both. A required context that reports on some pull
+    # requests and not others blocks the ones it skips forever.
+    - name: Grade the release pull request and publish the verdict
+      id: pull-request
+      if: inputs.mode == 'pull-request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+        REPO: ${{ inputs.repo }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        STATUS_CONTEXT: ${{ inputs.status-context }}
+        RELEASE_BRANCH_PREFIX: ${{ inputs.release-branch-prefix }}
+        ACTION_PATH: ${{ github.action_path }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+
+        # A scratch directory, never the caller's workspace. This action runs
+        # inside consumer repositories and a guard that leaves `pr.json` in
+        # someone else's checkout shows up in their next commit. It also means
+        # the caller needs no `actions/checkout` at all for this mode.
+        work="$(mktemp -d)"
+        trap 'rm -rf "$work"' EXIT
+
+        # ONE API read, three fields, and NOTHING from the event payload. Two
+        # reasons and both matter: an event payload interpolated into a shell
+        # script is arbitrary text from a pull request body executing on the
+        # runner, and the payload of an `edited` event is a snapshot
+        # release-please may already have replaced.
+        #
+        # The source took `head.ref` and the body from the API but the head SHA
+        # from `github.event.pull_request.head.sha`. Taking all three from ONE
+        # response closes that skew: the status is posted to the SHA whose body
+        # was actually graded, which is also the SHA branch protection is looking
+        # at, rather than to a snapshot that may be a push behind.
+        #
+        # No `|| true` and no default. An API failure must not produce an empty
+        # body that parses to zero closing references and reports clean -- the
+        # same vacuous green this guard exists to catch, one level up.
+        gh api "repos/$REPO/pulls/$PR_NUMBER" > "$work/pr.json"
+        head_ref="$(jq -er '.head.ref' "$work/pr.json")"
+        head_sha="$(jq -er '.head.sha' "$work/pr.json")"
+        # `// ""` and not `-e`: a null body is a real state (a pull request
+        # opened with none) and would otherwise read as a failed lookup.
+        jq -r '.body // ""' "$work/pr.json" > "$work/release-pr-body.md"
+
+        post_status() {
+          gh api -X POST "repos/$REPO/statuses/$head_sha" \
+            -f state="$1" -f context="$STATUS_CONTEXT" -f description="$2" \
+            -f target_url="$RUN_URL" > /dev/null
+          echo "posted $STATUS_CONTEXT=$1 on $head_sha"
+        }
+
+        case "$head_ref" in
+          "$RELEASE_BRANCH_PREFIX"*) ;;
+          *)
+            echo "Head branch '$head_ref' does not start with '$RELEASE_BRANCH_PREFIX', so release-please did not create it; nothing to check."
+            post_status success "Not a release pull request."
+            exit 0
+            ;;
+        esac
+
+        # THE VERDICT IS PUBLISHED BEFORE THE STEP DIES, and that ordering is the
+        # only reason the grade runs inside an `if` rather than being allowed to
+        # kill the step. Branch protection grades a CONTEXT ON THE HEAD SHA, so a
+        # verdict that never reaches one blocks nothing and the scheduled
+        # re-grade has nothing to overwrite.
+        #
+        # The source spread this over three workflow steps: `continue-on-error:
+        # true` on the grade, a publish step, then a third step re-asserting
+        # `steps.grade.outcome != 'success'` -- because `continue-on-error`
+        # rewrites a step's CONCLUSION to `success` and only `outcome` still
+        # holds the truth. That shape is unavailable here (`continue-on-error` is
+        # not a supported key on a composite step) and it was also a shape only a
+        # TEXT assertion could test. Collapsed into one shell body the exit code
+        # cannot be laundered, and the publish-then-fail ordering is EXECUTABLE by
+        # the self-test rather than merely asserted about the YAML.
+        #
+        # The pull request NUMBER is passed as well as the body, because the body
+        # is only the secondary signal: the authoritative set of issues this merge
+        # closes is `closingIssuesReferences`, which the verifier reads over
+        # GraphQL. See the header of verify.mjs for why the body alone is the
+        # wrong universe.
+        if node "$ACTION_PATH/verify.mjs" "$work/release-pr-body.md" "$PR_NUMBER"; then
+          post_status success "Graded at this push. Re-graded on a schedule until merge."
+        else
+          post_status failure "This release would close an issue it does not complete."
+          echo "The closing-keyword grade failed; see the output above."
+          exit 1
+        fi
+
+    # ── mode: link-regrade ─────────────────────────────────────────────────
+    #
+    # The time-of-check half. An issue attached through the Development panel
+    # writes a `connected` timeline event, and `connected` is not an activity
+    # type on ANY webhook -- so a link made after the last push fires nothing and
+    # no event-driven check can observe it. Looking again on a clock BOUNDS that
+    # window to one tick. It does not remove it; the residual doc says so.
+    #
+    # The mechanism lives in link-regrade.sh, deliberately not inline: four
+    # mutations of the previous inline version -- narrowing per_page, deleting
+    # the count floor, retargeting the base branch, and skipping release pull
+    # requests outright -- ran INERT against a 74-case suite that parsed the step
+    # but never executed it.
+    - name: Re-grade every open pull request against the live link graph
+      id: link-regrade
+      if: inputs.mode == 'link-regrade'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+        REPO: ${{ inputs.repo }}
+        CONTEXT: ${{ inputs.status-context }}
+        BASE_BRANCH: ${{ inputs.base-branch }}
+        RELEASE_BRANCH_PREFIX: ${{ inputs.release-branch-prefix }}
+        ACTION_PATH: ${{ github.action_path }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+        bash "$ACTION_PATH/link-regrade.sh"
+
+    # ── mode: merge-backstop ───────────────────────────────────────────────
+    #
+    # Runs after the merge, the one moment the answer is final and the one
+    # trigger no link timing, no cancelled run and no admin bypass can dodge. It
+    # cannot PREVENT the close. It removes the part that did the damage: that the
+    # close was silent. It reopens the issue, says why, and fails the run.
+    #
+    # This mode needs issues:WRITE. Without it the reopen 403s -- and it FAILS
+    # rather than skipping, because there is no `|| true` in the repair path.
+    - name: Grade the merge and reopen anything it closed by mistake
+      id: merge-backstop
+      if: inputs.mode == 'merge-backstop'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+        REPO: ${{ inputs.repo }}
+        MERGE_SHA: ${{ inputs.merge-sha }}
+        RELEASE_BRANCH_PREFIX: ${{ inputs.release-branch-prefix }}
+        ACTION_PATH: ${{ github.action_path }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+        node "$ACTION_PATH/merge-backstop.mjs" "$MERGE_SHA"

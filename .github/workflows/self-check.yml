@@ -65,6 +65,18 @@ jobs:
   # The test EXTRACTS the script from the action rather than carrying a copy. A
   # test with its own copy passes while the real one rots, which is the failure
   # mode this whole repository exists to remove.
+  # THE JOB NAME STAYS `Footer guard self-test` EVEN THOUGH IT NOW RUNS FOUR.
+  # That name is a REQUIRED status context on this repository's `main`
+  # (`enforce_admins: true`, so it genuinely binds). Renaming it to something
+  # more accurate would silently stop a required check from reporting — which is
+  # precisely the hazard the guard being added below is a composite action to
+  # avoid, and this repository is not exempt from its own finding. The name is
+  # a protection identifier now, not a description; the steps say what they are.
+  #
+  # The alternative — a new job with an honest name — would report under a
+  # context nobody has required, and an unrequired new context is how a guard
+  # ends up advisory. Landing it inside the already-required job means the proof
+  # blocks a merge from the day it lands.
   breaking-change-footers-guard:
     name: Footer guard self-test
     runs-on: ubuntu-latest
@@ -101,3 +113,22 @@ jobs:
       # most is the one asserting that resolving NOTHING is a finding.
       - name: Tooling pin reader self-test
         run: node tests/test-tooling-pins.js
+
+      # The release-PR closing-keyword guard, ported here so six more
+      # release-please repositories can adopt it. Two kinds of proof in one
+      # entry point, because it is two kinds of artifact:
+      #
+      #   * the action's shell bodies are EXTRACTED from action.yml and executed
+      #     against a stubbed `gh`, the same way the footer guard's test extracts
+      #     its `run:` block — a test carrying its own copy passes while the real
+      #     one rots;
+      #   * the five .mjs modules keep their five node:test suites, which import
+      #     the modules directly and so have no copy to drift from. They are run
+      #     with a case-count floor, because `node --test` over a directory with
+      #     no test files exits 0 and reports exactly like a passing suite.
+      #
+      # It needs `git` (the trailer parser is `git interpret-trailers`, not a
+      # reimplementation that would drift from it) and `jq`. Both are on
+      # ubuntu-latest. No dependencies, so no install step.
+      - name: Release-PR closing-keyword guard self-test
+        run: node tests/test-release-pr-closing-keywords.js
