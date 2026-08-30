@@ -47,7 +47,7 @@ const incident = () => ({
   statuses: {},
 });
 
-function runBackstop(data, sha) {
+function runBackstop(data, sha, envOverrides = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'merge-backstop-'));
   const bin = path.join(dir, 'bin');
   fs.mkdirSync(bin);
@@ -65,6 +65,7 @@ function runBackstop(data, sha) {
       STUB_LOG: logFile,
       GH_TOKEN: 'stub',
       REPO: `${O}/${R}`,
+      ...envOverrides,
     },
   });
   const log = fs.existsSync(logFile)
@@ -98,4 +99,40 @@ test('BACKSTOP CLI: a SHA with no pull request is named, not silently passed ove
   const r = runBackstop(incident(), SHA('ffff', 'f'));
   assert.equal(r.status, 0, r.out);
   assert.match(r.out, /not associated with any pull request; nothing to grade/);
+});
+
+// RELEASE_BRANCH_PREFIX must actually reach this CLI. It is an input, not a
+// literal -- release-please's default prefix can be overridden in a
+// consumer's manifest -- and the SAME #243 incident that FAILS under the
+// default prefix must also FAIL under a non-default one once the input is
+// wired. Without this pair, a change that stops threading the env var (an
+// action.yml edit, a dropped `env:` line) makes every non-default-prefix
+// consumer's backstop report "nothing to check" forever, over the exact
+// defect this file exists to catch -- and the rest of this suite, which
+// never varies the prefix, would not notice.
+test('BACKSTOP CLI: a non-default prefix reaches the CLI and still grades the #243 shape', () => {
+  const data = incident();
+  data.pulls[0].headRef = 'rp--branches--main';
+  const r = runBackstop(data, MERGE_SHA, { RELEASE_BRANCH_PREFIX: 'rp--branches--' });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /FAIL sethbacon\/terraform-state-manager-backend#245/);
+  const reopen = r.log.find((e) => e.method === 'PATCH' && e.path.endsWith('/issues/245'));
+  assert.ok(reopen, 'the non-default prefix must still trigger the repair, not just the report');
+});
+
+test('BACKSTOP CLI: a non-default prefix WITHOUT the env var passes an incident it should catch', () => {
+  // This is the failure the case above guards against, reproduced directly:
+  // the same PR, the same real incident shape, but RELEASE_BRANCH_PREFIX is
+  // NOT set -- as it would not be if action.yml stopped threading it. The
+  // CLI falls back to the compiled-in default, the PR's head no longer
+  // matches, and the backstop reports clean over a merge that should have
+  // been reopened.
+  const data = incident();
+  data.pulls[0].headRef = 'rp--branches--main';
+  const r = runBackstop(data, MERGE_SHA);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /does not start with 'release-please--branches--'/);
+  assert.equal(r.log.filter((e) => e.method === 'PATCH').length, 0,
+    'this pass documents the exposure when the prefix is unwired -- it must never gain a reopen, ' +
+      'or the test stops proving what an unwired prefix actually does');
 });

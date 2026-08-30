@@ -332,6 +332,64 @@ test('WIRING: the base branch and the release prefix are inputs, not literals', 
   }
 });
 
+// This is the other half of the wiring the previous case leaves unguarded: an
+// input existing and a script reading it from the right variable name says
+// nothing about whether action.yml's STEP actually forwards it. Three
+// separate mutations of the real tree -- the merge-backstop.mjs default
+// standing in for the env var, the pull-request step's shell case hardcoded
+// instead of reading $RELEASE_BRANCH_PREFIX, and the merge-backstop step's
+// `env:` line for it deleted outright -- all passed the entire suite before
+// this case existed, including every mjs unit test, because none of them run
+// through action.yml. Demonstrated end-to-end: with the merge-backstop step's
+// env line gone, a #243-shaped incident under a non-default prefix exits
+// status 0 with zero reopens -- a clean pass over the exact defect this
+// guard exists to catch.
+//
+// Walked per STEP rather than counted, so a mutation that drops one step's
+// line is named rather than merely lowering a total that could hide behind
+// another step's line surviving.
+test('WIRING: every step whose script reads RELEASE_BRANCH_PREFIX is handed it', () => {
+  const WIRE = 'RELEASE_BRANCH_PREFIX: ${{ inputs.release-branch-prefix }}';
+  const stepBounds = [...ACTION.matchAll(/^\s*id: (\S+)/gm)].map((m) => ({ id: m[1], at: m.index }));
+  assert.ok(stepBounds.length >= 4, 'fewer steps than expected: the id-based split is not finding them');
+  for (let i = 0; i < stepBounds.length; i++) {
+    const start = stepBounds[i].at;
+    const end = i + 1 < stepBounds.length ? stepBounds[i + 1].at : ACTION.length;
+    const body = ACTION.slice(start, end);
+    if (!body.includes('RELEASE_BRANCH_PREFIX')) continue;
+    assert.ok(
+      body.includes(WIRE),
+      `step "${stepBounds[i].id}" reads RELEASE_BRANCH_PREFIX but its env: block does not set it ` +
+        'from inputs.release-branch-prefix -- it would silently fall back to the compiled-in default'
+    );
+  }
+  // The floor: this action has exactly four steps today, and all four
+  // reference the prefix (two by shell interpolation, two inside the script
+  // they invoke). If that count drops, the loop above may simply have less
+  // to check, which would look identical to a passing scan.
+  const wiredSteps = stepBounds.filter((s, i) => {
+    const start = s.at;
+    const end = i + 1 < stepBounds.length ? stepBounds[i + 1].at : ACTION.length;
+    return ACTION.slice(start, end).includes(WIRE);
+  });
+  assert.equal(wiredSteps.length, 4, `expected all 4 steps to wire the prefix, found ${wiredSteps.length}`);
+});
+
+// THE ONE STRING THE WHOLE COMPOSITE-ACTION SHAPE EXISTS TO PRESERVE, pinned.
+// Every other property of the example workflow is asserted elsewhere -- the
+// triggers, the permissions, the pin, the concurrency key -- but not the job
+// NAME whose rename silently un-requires the check on any consumer that has
+// made it required. Renaming this one line in the adoption doc passed the
+// entire suite before this case existed.
+test('WIRING: the adoption example names the job exactly what a consumer requires', () => {
+  assert.match(
+    ADOPTION,
+    /^ {4}name: Release PR closes only what it completes$/m,
+    'the example workflow does not carry the exact required-context name -- a consumer who pastes ' +
+      'this and has required the old name would silently stop being protected'
+  );
+});
+
 // -- HALF 3: the artifact consumers actually copy ---------------------------
 //
 // The triggers and permissions moved into the consumer, so the example workflow
