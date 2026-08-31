@@ -390,6 +390,68 @@ test('WIRING: the adoption example names the job exactly what a consumer require
   );
 });
 
+// GITHUB EVALUATES `${{ }}` INSIDE A COMPOSITE ACTION'S OWN INPUT
+// DESCRIPTIONS -- not just inside steps -- and `github`, `inputs` and every
+// other context are OUT OF SCOPE there; only the input schema itself is being
+// rendered. `description: ... Pass \`${{ github.repository }}\`.` on the repo
+// input failed every one of four consumers' first adoption PR at once with
+// "Unrecognized named-value: 'github'", four seconds into the run, before
+// this test existed to catch it locally. The failure is invisible to
+// `python3 -c "import yaml"` (valid YAML) and to actionlint (which does not
+// understand composite-action metadata files at all) -- GitHub's own
+// template-validation step is the only thing that has ever caught it, and by
+// the time that runs it is already a broken PR in someone else's repository.
+//
+// So this scans the WHOLE FILE for a `${{ ... }}` expression sitting inside
+// prose (a `description:` value), rather than only the two sites that broke,
+// because the next one will be a third input nobody thought to check by hand.
+test('WIRING: no description field contains a live expression', () => {
+  const lines = ACTION.split('\n');
+  let inDescription = false;
+  let descriptionIndent = null;
+  const offenders = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const descMatch = line.match(/^(\s*)description:/);
+    if (descMatch) {
+      inDescription = true;
+      descriptionIndent = descMatch[1].length;
+      if (/\$\{\{/.test(line)) offenders.push(i + 1);
+      continue;
+    }
+    if (!inDescription) continue;
+    const indentMatch = line.match(/^(\s*)\S/);
+    const indent = indentMatch ? indentMatch[1].length : Infinity;
+    // A folded (`>-`) or literal (`|`) block's continuation lines are indented
+    // deeper than the `description:` key itself; anything at or shallower than
+    // that indent, or blank, ends the block.
+    if (line.trim() === '' || indent <= descriptionIndent) {
+      inDescription = false;
+      continue;
+    }
+    if (/\$\{\{/.test(line)) offenders.push(i + 1);
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `line(s) ${offenders.join(', ')} put a live \${{ }} expression inside a description: field. ` +
+      'GitHub evaluates it there and github/inputs are out of scope, so this fails every consumer\'s ' +
+      'adoption PR at run time. Describe the value in prose instead (see the repo and merge-sha ' +
+      'inputs for the pattern), or if a literal example is unavoidable, break the brace sequence so ' +
+      'it cannot parse as an expression.'
+  );
+});
+
+// The floor for the scan above: it must actually walk into at least one
+// multi-line description block, or an indentation bug that exits every block
+// immediately would report a clean file having read almost nothing.
+test('WIRING: the description scanner is not blind', () => {
+  const foldedBlocks = (ACTION.match(/description: >-/g) || []).length;
+  assert.ok(foldedBlocks >= 5, `found only ${foldedBlocks} folded description blocks; the scanner ` +
+    'above walks their continuation lines by indentation, and this floor is what proves it has ' +
+    'continuation lines to walk');
+});
+
 // -- HALF 3: the artifact consumers actually copy ---------------------------
 //
 // The triggers and permissions moved into the consumer, so the example workflow

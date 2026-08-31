@@ -97,7 +97,12 @@ inputs:
       the reason that mode exists.
     required: true
   repo:
-    description: owner/repo the pull request belongs to. Pass `${{ github.repository }}`.
+    description: >-
+      owner/repo the pull request belongs to. Pass the value of the github.repository
+      context. (Written without expression braces here on purpose -- GitHub evaluates
+      that syntax inside a composite action's own input descriptions, and github is
+      not in scope there. A literal expression in this field failed every consumer's
+      adoption PR with "Unrecognized named-value: 'github'" before this fix.)
     required: true
   pr-number:
     description: The pull request number. Required when mode is `pull-request`.
@@ -106,7 +111,8 @@ inputs:
   merge-sha:
     description: >-
       The merge commit to grade. Required when mode is `merge-backstop`; pass
-      `${{ github.sha }}`.
+      the value of the github.sha context (written without expression braces
+      for the same reason as the repo input above).
     required: false
     default: ""
   status-context:
