@@ -1,0 +1,161 @@
+---
+# Dependabot CI health — a stuck update PR is invisible until someone looks.
+#
+# THE INCIDENT THIS IS FOR. On 2026-08-31 this repository shipped v1.15.0, and
+# Dependabot opened a github-actions-dependencies bump PR in every one of
+# thirteen consumer repositories. All thirteen went red on the same two
+# guards (workflow-hardening's script-ref coupling, signature-replay's
+# Dependabot-authored-run refusal — both working exactly as designed) and sat
+# that way with nothing surfacing it. It was found by a human noticing, not by
+# anything in the estate. `stale-dependabot` in weekly-security.yml labels a
+# PR after FOURTEEN DAYS of no activity — a real signal for a different
+# failure mode (nobody looked), and much too slow for THIS one (CI already
+# ran and already failed, same day).
+#
+# WHY THIS IS SHARED, NOT ANOTHER PER-REPO COPY. weekly-security.yml is
+# intentionally hand-copied per repo because most of its jobs are repo-
+# specific (gpg-key-freshness reads a packer-only script path; the
+# marketplace-environment job only means something in an ADO extension). This
+# check has no such variation: "does an open Dependabot PR have a failing
+# required check" is the identical question in a Go backend, a React SPA, a
+# GitHub Action and an ADO extension. A copy of it WILL drift the way
+# release-please.yml and zizmor.yml did before 2026-08-20 — that migration's
+# whole justification applies here on day one instead of after the fact.
+#
+# WHAT IT DOES NOT DO. It does not push a fix and it does not merge anything.
+# Both signature-replay's Dependabot-authored-run guard and workflow-hardening's
+# script-ref coupling exist specifically to require a human to read the diff
+# before a shared-workflows bump reaches a secret-bearing job or a security
+# gate — see 4cloudguru/shared-workflows#36. Auto-applying the fix would BE
+# the compromise those guards defend against, wearing a bot's identity instead
+# of Dependabot's. This job's only job is to make sure a human finds out
+# sooner than "happened to look."
+#
+# NO SEPARATE SECRET. Every repository already grants its own workflow's
+# ambient GITHUB_TOKEN `issues: write` for exactly this shape (see
+# weekly-security.yml's osv-scan / notify-on-failure jobs, hand-copied in
+# every consumer already) — reading and labelling issues in the repo whose
+# token this is needs no distributed credential the way signature-replay's
+# cross-repo read does.
+name: Dependabot CI Health
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  dependabot-ci-health:
+    name: Dependabot CI health
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+
+      # Created (or left alone) with --force, so a repo that has never seen
+      # this label does not make `gh issue create --label` below the first
+      # thing that fails. Idempotent: an existing label with this name is
+      # untouched apart from the color/description this asserts.
+      - name: Ensure the tracking label exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh label create "dependabot-ci-health" --repo "$REPO" \
+            --color "B60205" \
+            --description "A Dependabot PR has a failing required check — filed by dependabot-ci-health.yml" \
+            --force
+
+      # Plain gh CLI + jq, no checkout: every fact this job needs (open PRs,
+      # their check rollups, this repo's own open tracking issues) comes from
+      # the GitHub API, and reading a tree this job never touches would be
+      # scope this job does not need. That also means no script-ref coupling
+      # applies here, unlike workflow-hardening.yml and signature-replay.yml:
+      # there is no second checkout of a checker script to keep in sync with
+      # the `uses:` pin, because there is no checkout at all.
+      - name: Reconcile stuck Dependabot PRs against tracking issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          LABEL="dependabot-ci-health"
+          TITLE_PREFIX="[ci-health] Dependabot PR"
+
+          # Every check GitHub rolled up for each open Dependabot PR. Filtered
+          # below to ones reporting an actual FAILURE/ERROR/TIMED_OUT/CANCELLED
+          # conclusion — a check still in progress has no conclusion yet and
+          # must not be read as stuck.
+          prs="$(gh pr list --repo "$REPO" --author 'app/dependabot' --state open \
+            --json number,title,url,statusCheckRollup)"
+
+          echo "$prs" | jq -c '.[]' | while read -r pr; do
+            number="$(jq -r '.number' <<<"$pr")"
+            title="$(jq -r '.title' <<<"$pr")"
+            url="$(jq -r '.url' <<<"$pr")"
+            failing="$(jq -r '[.statusCheckRollup[]? | select(.conclusion=="FAILURE" or .conclusion=="ERROR" or .conclusion=="TIMED_OUT" or .conclusion=="CANCELLED") | .name] | unique | sort | join(", ")' <<<"$pr")"
+
+            issue_title="${TITLE_PREFIX} #${number} is stuck on failing checks"
+            # Exact title match in jq, not `--search`: GitHub's search index is
+            # tokenized/fuzzy, not exact-substring, and re-derived per PR is
+            # cheap enough here not to need it.
+            existing="$(gh issue list --repo "$REPO" --label "$LABEL" --state open --json number,title \
+              --jq ".[] | select(.title == \"${issue_title}\") | .number" | head -1)"
+
+            if [ -z "$failing" ]; then
+              # Green (or nothing rolled up yet — a brand-new PR mid-run, which
+              # reports no FAILURE conclusion and must not be flagged). Close a
+              # tracking issue if one is open from an earlier, now-fixed run.
+              if [ -n "$existing" ]; then
+                gh issue comment "$existing" --repo "$REPO" \
+                  --body "PR #${number} is no longer failing required checks. Closing." >/dev/null
+                gh issue close "$existing" --repo "$REPO" >/dev/null
+                echo "closed #${existing}: PR #${number} recovered"
+              fi
+              continue
+            fi
+
+            # printf with explicit \n, not a heredoc: a heredoc body sits at
+            # column 0, which a YAML block scalar reads as de-indenting past
+            # the `run: |` block and fails to parse. One line, no ambiguity.
+            body="$(printf 'Dependabot PR #%s (`%s`) has at least one failing check as of this run:\n\n**%s**\n\n%s\n\nThis did not get a human commit and re-run yet. If the diff is reviewed and wanted, the usual remedy for a shared-workflows Dependabot-authored-run guard applies: push any commit to the branch as a human (the "Update branch" button is enough) and re-check CI.\n\nDetected by [this workflow run](%s).\n' "$number" "$title" "$failing" "$url" "$RUN_URL")"
+
+            if [ -n "$existing" ]; then
+              update_body="$(printf 'Still failing as of this run: %s\n%s\n' "$failing" "$RUN_URL")"
+              gh issue comment "$existing" --repo "$REPO" --body "$update_body" >/dev/null
+              echo "updated #${existing}: PR #${number} still failing (${failing})"
+            else
+              new_issue="$(gh issue create --repo "$REPO" --title "$issue_title" --body "$body" --label "$LABEL" 2>&1)"
+              echo "filed ${new_issue}: PR #${number} failing (${failing})"
+            fi
+          done
+
+          # The reverse direction: a tracking issue whose PR was merged or
+          # closed out from under it (not fixed-then-green, just gone) would
+          # otherwise sit open forever, since the loop above only ever looks at
+          # PRs that are still open.
+          open_prs="$(jq -r '[.[].number] | join(",")' <<<"$prs")"
+          gh issue list --repo "$REPO" --label "$LABEL" --state open --json number,title | \
+            jq -c '.[]' | while read -r issue; do
+              inum="$(jq -r '.number' <<<"$issue")"
+              ititle="$(jq -r '.title' <<<"$issue")"
+              pr_num="$(sed -n 's/.*PR #\([0-9]\+\) is stuck.*/\1/p' <<<"$ititle")"
+              [ -n "$pr_num" ] || continue
+              if ! grep -qx "$pr_num" <<<"$(tr ',' '\n' <<<"$open_prs")"; then
+                gh issue comment "$inum" --repo "$REPO" \
+                  --body "PR #${pr_num} is no longer open. Closing." >/dev/null
+                gh issue close "$inum" --repo "$REPO" >/dev/null
+                echo "closed #${inum}: PR #${pr_num} no longer open"
+              fi
+            done
