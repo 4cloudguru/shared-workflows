@@ -1,0 +1,163 @@
+# Runs osv-scanner and reports the exit code it ACTUALLY returned.
+#
+# WHY THIS EXISTS (terraform-registry-backend#894). Every consumer runs the
+# official osv-scanner action under `continue-on-error: true`, because an
+# advisory with no published fix must not pin a required check red. That does
+# two things, and the second one is the defect:
+#
+#   1. it collapses exit 1 ("vulnerabilities found") and the error exits (127
+#      general error, 128 no packages found) into one `outcome == 'failure'`,
+#      and GitHub exposes the numeric code nowhere;
+#   2. it rewrites the failed step's `conclusion` to `success`. The truth
+#      survives only in `outcome`, which workflow expressions can read and the
+#      REST and GraphQL jobs APIs cannot.
+#
+# So a scanner that stopped working produces exactly the same run record as one
+# that ran and found nothing, and the run history cannot be used to audit which
+# scanners are alive. That is not theoretical: a scan that exited 127 filed an
+# issue asserting vulnerabilities that did not exist, while seven genuinely
+# reachable advisories stayed invisible, and every field in that run's API
+# record read `success`.
+#
+# Consumers answered it with a heuristic — a non-zero exit carrying an empty
+# report implies a tooling error — which is a real improvement and has a real
+# blind spot: an error that occurs AFTER findings are written is non-zero with a
+# non-empty report, which is exactly what a healthy findings run looks like.
+# Only the code itself separates those, so this action captures it.
+#
+# HOW, and why it is a `docker run` rather than a wrapper. A composite action
+# cannot use `continue-on-error` on its own steps, so a composite that `uses:`
+# the official action cannot survive the scanner's non-zero exit to report on
+# it. Invoking the image is the only shape that can. The invocation below is
+# deliberately the same one the official action performs — same image, same
+# workspace mount, same argument convention, same GOTOOLCHAIN — so the only
+# behavioural difference is that the code is captured instead of erased.
+#
+# MEASURED, not assumed. Against ghcr.io/google/osv-scanner-action:v2.5.1 on
+# 2026-09-02, over real trees:
+#
+#   exit 0    clean            empty report
+#   exit 1    findings         report names the advisories
+#   exit 127  scanner error    EMPTY report — indistinguishable from clean
+#
+# The 127 case was reproduced on demand by scanning a module whose `go`
+# directive names a release newer than the image's bundled toolchain with call
+# analysis left on, which is the estate's original incident.
+name: "OSV scan with a captured exit code"
+description: >-
+  Runs osv-scanner in its official image and reports the real exit code,
+  distinguishing a scanner that failed from a scan that found nothing.
+
+inputs:
+  scan-args:
+    description: >-
+      Arguments to osv-scanner, one per line. Same shape and meaning as the
+      official action's input of the same name, because it is handed to the same
+      image entrypoint, which splits the final argument on newlines.
+    required: false
+    default: |-
+      --recursive
+      ./
+  image:
+    description: >-
+      The scanner image, pinned by digest. The default is v2.5.1. A tag alone is
+      accepted but is not what this estate pins with; the digest is what makes
+      the run reproducible.
+    required: false
+    default: "ghcr.io/google/osv-scanner-action:v2.5.1@sha256:dcd947131d8d11b8d0964de6590661fb921a4ecbd7b90a7cb21083acfc3fd8cc"
+  gotoolchain:
+    description: >-
+      GOTOOLCHAIN inside the container. Defaults to `auto`, which is what the
+      official action sets at v2.5.1 — the image itself carries `local`, and the
+      action overrides it. Set `local` to reproduce the abort deliberately.
+    required: false
+    default: "auto"
+  fail-on-scanner-error:
+    description: >-
+      Fail the step when the scanner ERRORED, as opposed to finding something.
+      Defaults to true, which is the whole point: a caller who reads none of the
+      outputs still gets a red run for a scanner that stopped working. Findings
+      never fail this step — that judgement belongs to the caller's triage.
+    required: false
+    default: "true"
+
+outputs:
+  exit-code:
+    description: "The scanner's real exit code, as a string."
+    value: ${{ steps.scan.outputs.exit-code }}
+  findings:
+    description: "true when the scanner exited 1, meaning it ran and found something."
+    value: ${{ steps.scan.outputs.findings }}
+  errored:
+    description: >-
+      true when the scanner exited with anything other than 0 or 1, meaning it
+      did not complete a scan. This is the output the run record could not carry.
+    value: ${{ steps.scan.outputs.errored }}
+
+runs:
+  using: composite
+  steps:
+    - name: Run osv-scanner and capture its exit code
+      id: scan
+      shell: bash
+      # EVERY INPUT ARRIVES THROUGH env, none through ${{ }} inside the script.
+      # A `${{ inputs.scan-args }}` spliced into a run body is an expression
+      # substituted before bash sees the line, so a caller-supplied value
+      # containing a quote or a semicolon becomes shell rather than an argument.
+      env:
+        OSV_IMAGE: ${{ inputs.image }}
+        OSV_SCAN_ARGS: ${{ inputs.scan-args }}
+        OSV_GOTOOLCHAIN: ${{ inputs.gotoolchain }}
+        OSV_FAIL_ON_ERROR: ${{ inputs.fail-on-scanner-error }}
+      run: |
+        set -uo pipefail
+
+        # The mount and working directory GitHub gives a docker action, so the
+        # scan-args a caller already had keep meaning what they meant. Paths in
+        # them are relative to the repository root either way.
+        set +e
+        docker run --rm \
+          -e GOTOOLCHAIN="$OSV_GOTOOLCHAIN" \
+          -v "$GITHUB_WORKSPACE":/github/workspace \
+          -w /github/workspace \
+          "$OSV_IMAGE" \
+          "$OSV_SCAN_ARGS"
+        code=$?
+        set -e
+
+        # 0 clean, 1 findings, anything else the scanner did not finish. 128 is
+        # "no packages found" and reaches us only when the caller passes
+        # --allow-no-lockfiles=false, since the image's entrypoint otherwise
+        # rewrites it to 0; when it does reach us it means nothing was scanned,
+        # which is an error by this action's reckoning.
+        findings=false
+        errored=false
+        case "$code" in
+          0) ;;
+          1) findings=true ;;
+          *) errored=true ;;
+        esac
+
+        {
+          echo "exit-code=$code"
+          echo "findings=$findings"
+          echo "errored=$errored"
+        } >> "$GITHUB_OUTPUT"
+
+        {
+          echo "### OSV scan"
+          echo ""
+          echo "| | |"
+          echo "|---|---|"
+          echo "| exit code | \`$code\` |"
+          echo "| findings | \`$findings\` |"
+          echo "| scanner errored | \`$errored\` |"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        if [ "$errored" = "true" ]; then
+          echo "::error title=OSV scanner did not complete::osv-scanner exited $code. That is neither 0 (clean) nor 1 (vulnerabilities found), so no scan was completed and the absence of findings means nothing. Do not report this as clean."
+          if [ "$OSV_FAIL_ON_ERROR" = "true" ]; then
+            exit 1
+          fi
+        fi
+        exit 0

@@ -132,3 +132,13 @@ jobs:
       # ubuntu-latest. No dependencies, so no install step.
       - name: Release-PR closing-keyword guard self-test
         run: node tests/test-release-pr-closing-keywords.js
+
+      # The osv-scan action's own body, executed against a stubbed `docker` that
+      # returns each exit code the real scanner produces. The property is that
+      # 0, 1 and 127 stay three different answers: `continue-on-error` collapses
+      # the last two into one `outcome` in every consumer, and the numeric code
+      # is in no API field, which is how a scanner that had stopped working
+      # produced the same green as a clean one for weeks
+      # (terraform-registry-backend#894).
+      - name: OSV scan action self-test
+        run: node tests/test-osv-scan-action.js
