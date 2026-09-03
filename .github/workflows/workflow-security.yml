@@ -83,7 +83,7 @@ jobs:
           # the diff showed only an action bump. A zizmor change alters what a
           # required check enforces in every consumer at once, so it should be a
           # reviewable line rather than a side effect.
-          version: "1.29.0"
+          version: "1.30.0"
           # DO NOT "simplify" this to the default. `advanced-security: true` is
           # the action's default and selects `--format=sarif`, where zizmor
           # EXITS 0 WHATEVER IT FINDS -- the gate silently becomes a reporter.

@@ -18,7 +18,36 @@ const path = require('node:path');
 
 const { problems, zizmorPins, actionlintPin } = require('../scripts/check-tooling-pins.cjs');
 const REAL = path.resolve(__dirname, '..');
-const CURRENT = { actionlint: '1.7.12', zizmor: '1.29.0' };
+
+// DERIVED FROM THE TREE, never written down here.
+//
+// These were hardcoded, and every one of the three cases that referenced them
+// broke on the routine zizmor 1.29.0 -> 1.30.0 bump: "the real tree is clean"
+// compared the new pin against the old constant, "a newer upstream is reported"
+// asserted a message naming a version the tree no longer carried, and the
+// drift case rewrote a string that was no longer in the file. Three red cases
+// for a bump that was correct, which is how a suite teaches people that a green
+// tooling bump means editing the tests until they stop complaining.
+//
+// The tree is the source of truth for what it pins, and the reader under test
+// is the thing that knows how to find it — so the suite asks it.
+const CURRENT = {
+    actionlint: actionlintPin(REAL).urlVersion,
+    zizmor: (zizmorPins(REAL)[0] || {}).version,
+};
+if (!CURRENT.actionlint || !CURRENT.zizmor) {
+    // The readers under test are how this file learns what the tree pins, so a
+    // reader that stopped resolving would otherwise hand every case below the
+    // string "undefined" and let them pass against nothing.
+    console.error(`  FAIL harness: could not read the tree's own pins (actionlint=${CURRENT.actionlint}, zizmor=${CURRENT.zizmor})`);
+    process.exit(1);
+}
+
+/** The next minor of a pinned version, as a stand-in for "upstream moved". */
+const bumped = (v) => {
+    const [major, minor] = v.split('.');
+    return `${major}.${Number(minor) + 1}.0`;
+};
 
 let failures = 0;
 const report = (ok, msg) => {
@@ -55,17 +84,24 @@ function tree(edit = (s) => s) {
 
 // ── upstream moved
 {
-    const found = problems(REAL, { actionlint: '1.7.12', zizmor: '1.30.0' });
-    report(found.some((f) => /zizmor is pinned to 1\.29\.0 but the latest release is 1\.30\.0/.test(f)),
-        `a newer zizmor upstream is reported`);
-    const found2 = problems(REAL, { actionlint: '1.8.0', zizmor: '1.29.0' });
-    report(found2.some((f) => /actionlint is pinned to 1\.7\.12 but the latest release is 1\.8\.0/.test(f)),
-        `a newer actionlint upstream is reported`);
+    const newerZizmor = bumped(CURRENT.zizmor);
+    const found = problems(REAL, { actionlint: CURRENT.actionlint, zizmor: newerZizmor });
+    report(
+        found.some((f) => f.includes(`zizmor is pinned to ${CURRENT.zizmor} but the latest release is ${newerZizmor}`)),
+        `a newer zizmor upstream is reported (${CURRENT.zizmor} -> ${newerZizmor})`,
+    );
+    const newerActionlint = bumped(CURRENT.actionlint);
+    const found2 = problems(REAL, { actionlint: newerActionlint, zizmor: CURRENT.zizmor });
+    report(
+        found2.some((f) => f.includes(`actionlint is pinned to ${CURRENT.actionlint} but the latest release is ${newerActionlint}`)),
+        `a newer actionlint upstream is reported (${CURRENT.actionlint} -> ${newerActionlint})`,
+    );
 }
 
 // ── the two zizmor pins drifting apart from each other
 {
-    const root = tree((s, f) => (f === 'workflow-security-record.yml' ? s.replace('"1.29.0"', '"1.28.0"') : s));
+    const root = tree((s, f) =>
+        f === 'workflow-security-record.yml' ? s.replace(`"${CURRENT.zizmor}"`, '"0.0.1"') : s);
     const found = problems(root, CURRENT);
     report(found.some((f) => /pinned at 2 different versions/.test(f)),
         `the gate and the recorder pinning different scanners is a finding`);
@@ -78,9 +114,14 @@ function tree(edit = (s) => s) {
     // skips. A non-global replace edits the comment and leaves the real pin
     // untouched, which is how the first version of this case passed for the
     // wrong reason.
-    const root = tree((s) => s.replace(/download\/v1\.7\.12\/actionlint_1\.7\.12_([a-z0-9_]+)\.tar\.gz/g,
-        'download/v1.8.0/actionlint_1.8.0_$1.tar.gz'));
-    const found = problems(root, { actionlint: '1.8.0', zizmor: '1.29.0' });
+    const nextActionlint = bumped(CURRENT.actionlint);
+    const urlRe = new RegExp(
+        `download/v${CURRENT.actionlint.replace(/\./g, '\\.')}/actionlint_${CURRENT.actionlint.replace(/\./g, '\\.')}_([a-z0-9_]+)\\.tar\\.gz`,
+        'g',
+    );
+    const root = tree((s) =>
+        s.replace(urlRe, `download/v${nextActionlint}/actionlint_${nextActionlint}_$1.tar.gz`));
+    const found = problems(root, { actionlint: nextActionlint, zizmor: CURRENT.zizmor });
     report(found.some((f) => /internally inconsistent/.test(f)),
         `a URL bumped without its checksum is a finding`);
 }

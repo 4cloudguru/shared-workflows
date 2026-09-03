@@ -97,7 +97,7 @@ jobs:
           # Kept in step with workflow-security.yml deliberately: the two jobs
           # must scan with the SAME scanner, or the tab records findings from a
           # different version than the one gating the pull request.
-          version: "1.29.0"
+          version: "1.30.0"
           # true here, false there -- the difference IS the division of labour.
           # This uploads SARIF and therefore exits 0 regardless of findings; the
           # other file is what makes a finding fail.
