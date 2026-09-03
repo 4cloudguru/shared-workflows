@@ -136,3 +136,54 @@ test('BACKSTOP CLI: a non-default prefix WITHOUT the env var passes an incident 
     'this pass documents the exposure when the prefix is unwired -- it must never gain a reopen, ' +
       'or the test stops proving what an unwired prefix actually does');
 });
+
+// -- THE REPAIR LOOP'S TWO GAPS (#40) ----------------------------------------
+//
+// The loop built each reopen path from the referenced issue's OWN coordinates,
+// which come from the linked-issue graph's repository node — so a cross-repo
+// reference produced a path this job's repo-scoped token cannot write. There
+// was no same-repository check and no per-reference error handling, so the 403
+// aborted the whole loop: references already reopened stayed reopened, the ones
+// after were never attempted, and the summary said neither.
+//
+// The repair path had never run with a non-empty universe in production across
+// 79 push-mode runs, so nothing had ever exercised this.
+
+// A release that closes a LOCAL issue and a FOREIGN one, in that order and in
+// the reverse order, so the local repair is asserted on both sides of the
+// foreign reference. Under the old loop the second ordering left #245
+// unrepaired.
+const crossRepoIncident = (foreignFirst) => {
+  const local = { number: 245, state: 'CLOSED', repository: { name: R, owner: { login: O } } };
+  const foreign = { number: 99, state: 'CLOSED', repository: { name: 'other-repo', owner: { login: 'someone-else' } } };
+  const d = incident();
+  d.pulls[0].closingIssuesReferences.nodes = foreignFirst ? [foreign, local] : [local, foreign];
+  d.issues[`someone-else/other-repo#99`] = { state: 'closed', closed_at: '2026-07-23T22:11:29Z' };
+  return d;
+};
+
+for (const foreignFirst of [false, true]) {
+  test(`BACKSTOP CLI: a cross-repo reference is refused by name, and the local repair still happens (foreign ${foreignFirst ? 'first' : 'second'})`, () => {
+    const r = runBackstop(crossRepoIncident(foreignFirst), MERGE_SHA);
+
+    assert.equal(r.status, 1, `the run still fails — the close already happened:\n${r.out}`);
+
+    // The local one is repaired REGARDLESS of where the foreign one sits in the
+    // list. This is the assertion the old loop failed when foreign came first.
+    const localReopen = r.log.find((e) => e.method === 'PATCH' && e.path.endsWith(`/${R}/issues/245`));
+    assert.ok(localReopen, 'the local issue was left unrepaired because another reference came first');
+    assert.equal(localReopen.fields.state, 'open');
+
+    // The foreign one is never written to. Not attempted-and-failed: not
+    // attempted, because the token is scoped to this repository.
+    const foreignWrites = r.log.filter(
+      (e) => e.method !== 'GET' && e.path.includes('someone-else/other-repo'),
+    );
+    assert.deepEqual(foreignWrites, [], 'the job wrote to a repository its token is not scoped to');
+
+    // And it says so, so "nothing to repair" and "could not repair" are
+    // distinguishable in the log a human reads.
+    assert.match(r.out, /could not repair .*someone-else\/other-repo#99/,
+      'a skipped reference that is silently skipped is the same as one that was never found');
+  });
+}

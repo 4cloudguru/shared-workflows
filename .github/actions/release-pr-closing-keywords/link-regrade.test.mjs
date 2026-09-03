@@ -129,9 +129,14 @@ test('HARNESS: 150 open pulls -- the release PR past page one is walked, graded,
   pulls.push(releasePull(150));
   const r = runStep(dataset(pulls));
 
-  assert.equal(r.status, 0, `the tick itself stays green (the verdict is the status):\n${r.out}`);
+  // The tick FAILS when it discovers a violation (#38). It used to exit 0 and
+  // leave the entire signal in a commit status that no adopter had wired as a
+  // required context, so the discovery was made and then surfaced nowhere.
+  assert.equal(r.status, 1, `a discovered violation must fail the job, not only the status:\n${r.out}`);
   assert.match(r.out, /enumerated: 150 open pull request\(s\), 1 release, 1 failing\./,
     'the walk must reach all 150 and grade the one release PR');
+  assert.match(r.out, /close an issue the release does not complete/,
+    'the failure has to say what it found, not just exit non-zero');
   // M4 detector: skipping release PRs leaves no failure status on the head SHA.
   const posts = postedTo(r.log, REL_SHA);
   assert.equal(posts.length, 1, 'exactly one status lands on the release head SHA');
@@ -204,4 +209,83 @@ test('HARNESS: an empty universe passes only because the independent count agree
   const r = runStep(dataset([]));
   assert.equal(r.status, 0, r.out);
   assert.match(r.out, /enumerated: 0 open pull request\(s\), 0 release, 0 failing\./);
+});
+
+// -- THE CLI's OWN ISSUE-STATE READER, EXECUTED ------------------------------
+//
+// verify.mjs consults `issueState` for a BODY-ONLY reference: a `closes [#N]`
+// the rendered changelog carries that the link graph does not hold. Every
+// module suite injects its own stub into evaluate(), so the real reader at
+// verify.mjs's CLI entry point was on no tested path at all — and replacing its
+// body with `() => 'closed'` passed the whole 121-case suite while turning a
+// genuine violation into "already closed, so the merge cannot lose anything"
+// and posting success (#39).
+//
+// This case reaches it the only way that proves it: through the real script,
+// against the stub, with the referenced issue OPEN and absent from
+// closingIssuesReferences. The assertion on the request stream is what makes
+// the mutation impossible to survive — a reader that answers without asking
+// GitHub leaves no GET behind.
+function bodyOnlyReleasePull(number) {
+  return {
+    number,
+    state: 'open',
+    base: 'main',
+    headSha: REL_SHA,
+    headRef: 'release-please--branches--main',
+    body:
+      ':robot: I have created a release *beep* *boop*\n---\n\n' +
+      `## [9.9.9](https://github.com/${O}/${R}/compare/v9.9.8...v9.9.9) (2026-08-28)\n\n### Bug Fixes\n\n` +
+      `* **x:** y ([#901](${U(901)})) ([c0ffee0](${C(COMMIT_SHA)})), closes [#777](${U(777)})\n`,
+    // EMPTY on purpose: the link graph does not carry #777, so the verdict can
+    // only come from the CLI's own issue-state read.
+    closingIssuesReferences: { pageInfo: { hasNextPage: false }, nodes: [] },
+  };
+}
+
+const issueReadsFor = (log, n) =>
+  log.filter((e) => (e.method || 'GET') === 'GET' && e.path.split('?')[0].endsWith(`/issues/${n}`));
+
+test('HARNESS: a body-only reference to an OPEN issue fails, and the CLI really asked GitHub', () => {
+  const pulls = [bodyOnlyReleasePull(1)];
+  const data = {
+    pulls,
+    commits: { [COMMIT_SHA]: 'fix(x): y\n\nRefs #777' },
+    issues: { [`${O}/${R}#777`]: { state: 'open', closed_at: null } },
+    statuses: {},
+  };
+  const r = runStep(data);
+
+  assert.equal(r.status, 1, `an open issue the release only Refs is a violation:\n${r.out}`);
+  const posts = postedTo(r.log, REL_SHA);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].state, 'failure', 'a body-only closes of an OPEN issue must grade as failure');
+
+  // The mutation this kills: `const issueState = () => 'closed'` in verify.mjs.
+  // It answers without asking, so no read of /issues/777 appears in the stream.
+  assert.ok(
+    issueReadsFor(r.log, 777).length > 0,
+    'the CLI returned a verdict without reading the issue state: its own issueState reader is not on ' +
+      'the executed path, which is exactly how a permissive one-line edit passed the whole suite',
+  );
+});
+
+// The converse, so the case above cannot be satisfied by a reader hardcoded the
+// other way: the same body-only shape with the issue CLOSED grades as success.
+// A reader stuck on 'open' fails here; a reader stuck on 'closed' fails above.
+test('HARNESS: a body-only reference to an already-CLOSED issue passes', () => {
+  const pulls = [bodyOnlyReleasePull(1)];
+  const data = {
+    pulls,
+    commits: { [COMMIT_SHA]: 'fix(x): y\n\nRefs #777' },
+    issues: { [`${O}/${R}#777`]: { state: 'closed', closed_at: '2026-08-01T00:00:00Z' } },
+    statuses: {},
+  };
+  const r = runStep(data);
+
+  assert.equal(r.status, 0, `an already-closed issue loses nothing on merge:\n${r.out}`);
+  const posts = postedTo(r.log, REL_SHA);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].state, 'success');
+  assert.ok(issueReadsFor(r.log, 777).length > 0, 'the verdict must still come from a real read');
 });
