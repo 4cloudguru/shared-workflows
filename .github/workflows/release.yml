@@ -1,0 +1,72 @@
+---
+# This repository releases ITSELF with the definition it publishes.
+#
+# WHY THIS DID NOT EXIST, AND WHY THAT WAS THE BUG
+#
+# .github/workflows/release-please.yml in this repository is `workflow_call`
+# only. It is the definition TWELVE other repositories call to get their
+# releases, and nothing called it here -- there was no config, no manifest and
+# no caller. Every tag from v1.13.0 to v1.18.0 was cut by hand.
+#
+# The consequence showed up on 2026-09-03: four releasable commits sat on main
+# behind v1.17.0, twelve repositories rolled their pins to an UNTAGGED commit
+# because there was no tag on the fixed tree to roll to, and one of them carries
+# a "retag when v1.18.0 cuts" note waiting on a release nothing was going to
+# produce. The repo that hands everyone else their release automation ran none
+# itself -- the same observation self-check.yml already makes about the gates.
+#
+# Calling ./.github/workflows/release-please.yml rather than duplicating the job
+# is deliberate, for the same reason self-check.yml calls the security gate: if
+# the shared definition breaks, it breaks HERE first, before a caller pins the
+# broken commit. A hand-rolled copy would keep working while the thing it
+# represents was broken.
+#
+# WHAT COUNTS AS A RELEASE HERE -- read this before wondering why no release PR
+# appeared.
+#
+# release-please's releasable units are `feat`, `fix` and `deps`. `ci`, `chore`,
+# `build`, `test` and `docs` never bump a version, and listing `ci` in a visible
+# changelog section does NOT change that -- section visibility controls the
+# changelog, not the bump.
+#
+# In THIS repository the workflows and composite actions ARE the product. A
+# change to a published definition is therefore `feat:` or `fix:`, NOT `ci:`,
+# even though the file it edits lives under .github/. Reserve `ci:` for this
+# repository's own plumbing -- self-check, the drift canary -- where a change
+# genuinely does not affect a caller.
+#
+# That distinction is not hypothetical. Of the four commits behind v1.18.0,
+# `fix(signature-replay)`, `fix(release-pr-guard)` and `feat(osv-scan)` would
+# each have produced a release PR on their own. The zizmor bump was committed as
+# `ci:` and would not have, despite changing what a REQUIRED check enforces in
+# every consumer -- which is exactly the kind of change a consumer needs a
+# version for.
+#
+# `workflow_dispatch` is here so a release can still be forced when a genuinely
+# unreleasable batch nonetheless needs a tag.
+name: Release
+
+"on":
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    uses: ./.github/workflows/release-please.yml
+    # Exactly one secret, named. NOT `secrets: inherit` -- that forwards every
+    # secret in this repository to the called workflow, which zizmor flags
+    # (secrets-inherit) and which would be a strange over-grant to introduce
+    # through a workflow whose whole purpose is least privilege.
+    #
+    # The called definition preflights both credentials and fails with an
+    # actionable message when either is empty. This repository had NO repository
+    # variables and NO repository secrets when this landed, so if
+    # RELEASE_DISPATCH_APP_ID and RELEASE_DISPATCH_APP_KEY are not provided at
+    # the organisation level, the first run will say so plainly rather than
+    # failing with "Bad credentials".
+    secrets:
+      RELEASE_DISPATCH_APP_KEY: ${{ secrets.RELEASE_DISPATCH_APP_KEY }}

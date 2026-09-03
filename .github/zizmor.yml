@@ -26,3 +26,7 @@ rules:
       # added to any other workflow here still fails. Tracked in #45; this
       # entry comes out when actionlint can parse `$/`.
       - self-check.yml
+      # release.yml calls this repository's own release-please definition, for
+      # the reason written at the top of that file: the repo that publishes the
+      # definition should be the first to break on it.
+      - release.yml

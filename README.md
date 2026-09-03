@@ -120,6 +120,33 @@ Three modes, and they are not the same kind of thing:
 — read this one first. Two of its limits are settings on the consuming
 repository, and while `enforce_admins` is `false` the guard binds nobody.
 
+## Releasing this repository
+
+Releases are cut by release-please, from `.github/workflows/release.yml`, which
+calls the very `release-please.yml` definition this repository publishes to
+twelve others. Before 2026-09-03 nothing called it here and every tag was cut by
+hand; four releasable commits sat unreleased behind v1.17.0 while twelve
+repositories rolled their pins to an untagged commit because there was no tag on
+the fixed tree to roll to.
+
+**Choose the commit type by who is affected, not by which directory the file is
+in.** The workflows and composite actions here *are* this repository's product,
+and they live under `.github/`, so the usual instinct is wrong:
+
+| change | type |
+| --- | --- |
+| a published workflow or composite action — anything a caller executes | `feat:` / `fix:` |
+| this repository's own plumbing: `self-check.yml`, the drift canary, its tests | `ci:` |
+
+This matters because release-please's releasable units are `feat`, `fix` and
+`deps`. A `ci:` commit **never** bumps a version, and listing `ci` in a visible
+changelog section does not change that — section visibility controls the
+changelog, not the bump. A published-behaviour change committed as `ci:` is a
+change consumers need a version for that will never get one.
+
+If a batch genuinely contains nothing releasable but still needs a tag, run the
+`Release` workflow by hand (`workflow_dispatch`).
+
 ## Tenancy model (estate-wide)
 
 The suite is moving to an explicit tenancy model: **the host is the content tenant**
