@@ -73,13 +73,27 @@ const ACTION_DIR = path.join(__dirname, '..', '.github', 'actions', 'release-pr-
 const ACTION = path.join(ACTION_DIR, 'action.yml');
 const STUB = path.join(ACTION_DIR, 'stub-gh.cjs');
 
-// The floor moves only UP. 115 is what the ported suites enumerate today.
-const CASE_FLOOR = 115;
+// The floor moves only UP. 125 is what the ported suites enumerate today.
+//
+// It was 115 against 121 actual cases, and that slack was itself a finding
+// (#39): six deletions fitted underneath it, so removing merge-backstop-cli's
+// whole suite left the harness green with "116 passing". A floor with room in
+// it measures nothing but the room.
+const CASE_FLOOR = 125;
+
+// The shell/contract half was counted by NOTHING. `report()` tallies failures,
+// not assertions, so deleting the flagship grade-fails-open-issue block simply
+// removed its lines from the output and the run stayed green — the same vacuous
+// pass the module floor exists to prevent, on the half that executes the real
+// action bodies. Raise it when assertions are added, the same rule as above.
+const SHELL_ASSERTION_FLOOR = 33;
 
 const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'release-pr-guard-selftest-'));
 
 let failures = 0;
+let assertions = 0;
 const report = (ok, message) => {
+    assertions += 1;
     if (ok) {
         console.log(`  OK   ${message}`);
     } else {
@@ -176,6 +190,30 @@ report(
     extracted.blocks.get('link-regrade').includes('link-regrade.sh'),
     'the extracted link-regrade script runs the extracted re-grade script',
 );
+// THE INVOCATION LINES MUST NOT SWALLOW A FAILURE (#39).
+//
+// action.yml claims, six lines above the merge-backstop invocation, that the
+// mode "FAILS rather than skipping, because there is no `|| true` in the repair
+// path". Nothing executed those two lines, so the claim and the code could
+// diverge in silence: appending `|| true` to either passed the whole suite.
+//
+// Asserted on the extracted body rather than on a grep of action.yml, so a
+// second invocation added elsewhere in the same step is covered too.
+for (const mode of ['merge-backstop', 'link-regrade']) {
+    const body = extracted.blocks.get(mode);
+    const swallowing = body
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => !l.startsWith('#'))
+        .filter((l) => /(merge-backstop\.mjs|link-regrade\.sh)/.test(l))
+        .filter((l) => /\|\|\s*true|\|\|\s*:|;\s*true\b/.test(l));
+    report(
+        swallowing.length === 0,
+        `the extracted ${mode} script's invocation does not swallow a non-zero exit` +
+            (swallowing.length ? ` — found: ${swallowing.join(' / ')}` : ''),
+    );
+}
+
 report(
     extracted.blocks.get('merge-backstop').includes('merge-backstop.mjs'),
     'the extracted merge-backstop script runs the backstop',
@@ -457,6 +495,20 @@ try {
     }
 } finally {
     fs.rmSync(workRoot, { recursive: true, force: true });
+}
+
+// The shell/contract floor, checked AFTER everything has reported. It counts
+// the assertions this file made, including the two module-suite reports, so it
+// is a statement about this harness rather than about node:test.
+if (assertions < SHELL_ASSERTION_FLOOR) {
+    console.error(
+        `  FAIL harness: made ${assertions} assertion(s), floor is ${SHELL_ASSERTION_FLOOR}. ` +
+            'Assertions were deleted, or a block stopped running and took its reports with it — ' +
+            'which is indistinguishable from a clean run in the output above.',
+    );
+    failures += 1;
+} else {
+    console.log(`  OK   harness: made ${assertions} assertion(s), floor is ${SHELL_ASSERTION_FLOOR}`);
 }
 
 if (failures > 0) {

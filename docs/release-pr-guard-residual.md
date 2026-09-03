@@ -70,13 +70,26 @@ graded=0` and exits 0.
 
 ## What is implemented
 
-**1. `schedule` — bounds the window.** Every 5 minutes, `mode: link-regrade`
-re-grades every open pull request against the live link graph and publishes the
-verdict as a commit status **on the head SHA**, the only place protection looks.
-`mode: pull-request` posts the same context immediately, so no pull request waits
-on a status only the cron can produce, and the cron can overwrite it — the last
-status posted for a context wins. A 5-minute tick would have fired twice inside
-#243's 9m19s gap.
+**1. `schedule` — bounds the window.** `mode: link-regrade` re-grades every open
+pull request against the live link graph and publishes the verdict as a commit
+status **on the head SHA**, the only place protection looks. `mode: pull-request`
+posts the same context immediately, so no pull request waits on a status only the
+cron can produce, and the cron can overwrite it — the last status posted for a
+context wins.
+
+**The cron asks for every 5 minutes and does not get it.** Measured over twelve
+consecutive ticks in `sethbacon/terraform-state-manager-backend`: minimum 1.7h,
+median 3.8h, maximum 5.4h — roughly 2% of requested ticks delivered. An earlier
+version of this document said a 5-minute tick "would have fired twice inside
+#243's 9m19s gap"; at the observed cadence it would very likely have fired
+**zero** times. The schedule narrows the window from unbounded to hours, which is
+worth having, and is not what "every 5 minutes" suggests to a reader.
+
+Raising the cadence is capped from the other side: `link-regrade.sh` re-posts
+only on a CHANGED verdict for exactly this reason, and a true 5-minute cadence
+that did re-post each tick would exhaust GitHub's 1000-statuses-per-SHA-per-
+context limit in about three and a half days. For a guaranteed-fresh grade before
+merging, dispatch the workflow by hand rather than waiting for a tick.
 
 **2. `push` to the release base — grades after the fact and repairs.**
 `mode: merge-backstop` re-runs the *same* `evaluate()` with the clock wound back
@@ -148,10 +161,15 @@ current state rather than assuming:
 gh api repos/<owner>/<repo>/branches/main/protection/enforce_admins --jq .enabled
 ```
 
-**R3. One cron tick is still exploitable.** A link made and merged inside the
-same 5-minute window merges green. GitHub does not guarantee cron punctuality and
-may delay a tick under load, so the true window is ≥5 minutes. The backstop
-catches it after the fact; nothing prevents it.
+**R3. One cron tick is still exploitable, and the tick is hours wide.** A link
+made and merged between two ticks merges green. The requested cadence is 5
+minutes; the *delivered* cadence measured across twelve consecutive ticks was
+1.7h at best and 5.4h at worst, so the exposure is a matter of hours rather than
+the ">=5 minutes" this section used to claim. A concrete instance during the
+rollout: `sethbacon/azure-pipelines-terraform#1080` carried no guard signal at
+all for roughly four and a half hours, until a tick at 12:17:51Z re-graded it.
+The backstop catches it after the fact; nothing prevents it. Dispatch the
+workflow by hand for a fresh grade before merging.
 
 **R4. Scheduled workflows are disabled after 60 days of repository inactivity.**
 If that happens, `link-regrade` stops silently and the window reopens to

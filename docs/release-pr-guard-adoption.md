@@ -52,8 +52,18 @@ name: Release PR Guard
   pull_request:
     branches: [main]
     types: [opened, edited, synchronize, reopened]
-  # Bounds the time-of-check window. GitHub's floor is 5 minutes and it does not
-  # guarantee punctuality, so this shortens the exposure rather than removing it.
+  # Bounds the time-of-check window. The cron asks for every 5 minutes; GitHub
+  # delivers roughly 2% of scheduled ticks on a busy account, so the REAL window
+  # is hours, not minutes -- measured over twelve consecutive ticks in
+  # sethbacon/terraform-state-manager-backend: minimum 1.7h, median 3.8h,
+  # maximum 5.4h. Keep the 5-minute cron anyway: asking for less does not make
+  # delivery more frequent, and asking for more is capped from the other side by
+  # GitHub's 1000-statuses-per-SHA-per-context limit, which a true 5-minute
+  # cadence would exhaust in about three and a half days.
+  #
+  # So this NARROWS the exposure; it does not close it. If you need a
+  # guaranteed-fresh grade before merging a release, run this workflow by hand
+  # (Actions -> Run workflow) rather than waiting for a tick.
   schedule:
     - cron: "*/5 * * * *"
   # Fires after the merge, the one moment the answer is final.

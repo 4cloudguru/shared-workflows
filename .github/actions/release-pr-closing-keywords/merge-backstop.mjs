@@ -243,10 +243,30 @@ async function main() {
   // saw it. Reopening is safe by construction: every entry here is an issue no
   // commit in the release asked to close.
   const reopened = [];
+  const unrepaired = [];
   for (const r of failed) {
+    // SAME REPOSITORY ONLY, and per-reference error handling around the write
+    // (#40). Both gaps were in this loop and both produce a half-repaired state
+    // reported as a failure, which is the worst of the available outcomes.
+    //
+    // The coordinates come from the linked-issue graph's own repository node, so
+    // a cross-repository reference yields a path pointing somewhere this job's
+    // repo-scoped GITHUB_TOKEN cannot write. That is a 403, and an unhandled 403
+    // aborted the whole loop: the references already reopened stayed reopened,
+    // the ones after it were never attempted, and nothing said which was which.
+    //
+    // Refusing up front is better than discovering it through the error, because
+    // the refusal can name the reference in the form this estate writes
+    // cross-repo references in, and because a token that CAN write there would
+    // silently start reopening other repositories' issues from this one's run.
+    if (r.ref.owner !== owner || r.ref.repo !== repo) {
+      unrepaired.push(`${r.id} — in another repository; this job's token is scoped to ${owner}/${repo}`);
+      continue;
+    }
     const path = `repos/${r.ref.owner}/${r.ref.repo}/issues/${r.ref.issue}`;
-    if (api(path).state !== 'closed') continue;
-    gh(['api', '-X', 'PATCH', path, '-f', 'state=open']);
+    try {
+      if (api(path).state !== 'closed') continue;
+      gh(['api', '-X', 'PATCH', path, '-f', 'state=open']);
     gh([
       'api', '-X', 'POST', `${path}/comments`, '-f',
       // The provenance line is the RUN URL, not a workflow path. A hardcoded
@@ -259,8 +279,17 @@ async function main() {
         `only a non-closing reference. If the release really does complete this, close it by hand and say so here.\n\n` +
         `Backstop run: ${process.env.RUN_URL || '(no RUN_URL in the environment)'}`,
     ]);
-    reopened.push(r.id);
+      reopened.push(r.id);
+    } catch (e) {
+      // One reference that cannot be repaired must not strand the rest. The run
+      // still fails -- the close already happened and this could not undo it --
+      // but the summary now distinguishes "nothing to repair" from "could not
+      // repair", which is the distinction the caller acts on.
+      unrepaired.push(`${r.id} — ${e && e.message ? e.message.split('\n')[0] : 'repair failed'}`);
+    }
   }
+
+  for (const u of unrepaired) console.log(`could not repair ${u}`);
 
   summarise([
     `### Release #${pr.number} closed ${failed.length} issue(s) it does not complete`,
@@ -268,6 +297,9 @@ async function main() {
     ...failed.map((r) => `- **${r.id}** — ${r.why}`),
     '',
     reopened.length ? `Reopened: ${reopened.join(', ')}.` : 'Nothing needed reopening; the issues are already open.',
+    ...(unrepaired.length
+      ? ['', `Could NOT repair ${unrepaired.length} reference(s):`, ...unrepaired.map((u) => `- ${u}`)]
+      : []),
     '',
     'This ran AFTER the merge because a Development-panel link emits a `connected` timeline event,',
     'and `connected` is not an activity type on any webhook. No pre-merge trigger can observe it.',

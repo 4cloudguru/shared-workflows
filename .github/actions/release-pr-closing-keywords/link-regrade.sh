@@ -148,3 +148,26 @@ if [ "$considered" -ne "$open_count" ]; then
   echo "or the projection dropped rows. Refusing to pass." >&2
   exit 1
 fi
+
+# A DISCOVERED VIOLATION FAILS THE JOB, not only the commit status (#38).
+#
+# This mode exists for the one thing the pull_request job can never see: a link
+# added through the Development panel fires no webhook, so only a re-grade
+# against the live graph finds it. Counting that discovery and exiting 0 put the
+# entire signal in the `release-guard/link-regrade` status -- which is a required
+# context in none of the twelve adopters, so the finding was made and then
+# surfaced nowhere that blocks anything.
+#
+# THE NOISE IS THE POINT, and it was the argument for exiting 0. A scheduled run
+# stays red every tick until the release pull request is fixed. That is not a
+# flake: it is a live violation persisting, and a guard whose discovery expires
+# quietly is the failure this whole action exists to prevent. The status is
+# still posted per pull request, so which one is failing stays legible; this
+# exit only makes the discovery visible without every consumer having to wire a
+# required context first.
+if [ "$failing" -gt 0 ]; then
+  echo "$failing release pull request(s) close an issue the release does not complete." >&2
+  echo "The per-PR $CONTEXT status says which. Re-run after fixing the pull request body" >&2
+  echo "or the issue links; this job stays red until the violation is gone." >&2
+  exit 1
+fi
