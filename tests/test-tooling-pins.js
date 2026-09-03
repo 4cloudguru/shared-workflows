@@ -16,7 +16,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { problems, zizmorPins, actionlintPin } = require('../scripts/check-tooling-pins.cjs');
+const { problems, zizmorPins, zizmorActionPins, actionlintPin } = require('../scripts/check-tooling-pins.cjs');
 const REAL = path.resolve(__dirname, '..');
 
 // DERIVED FROM THE TREE, never written down here.
@@ -105,6 +105,67 @@ function tree(edit = (s) => s) {
     const found = problems(root, CURRENT);
     report(found.some((f) => /pinned at 2 different versions/.test(f)),
         `the gate and the recorder pinning different scanners is a finding`);
+}
+
+// ── the action pin, and whether it can install the scanner pin
+//
+// THE REGRESSION THESE EXIST FOR. #47 bumped `version:` to 1.30.0, this checker
+// reported every pin current, and both zizmor jobs died on the first real run
+// with `Unknown version: 1.30.0`. The action ships a FROZEN TABLE of the zizmor
+// releases it can install and v0.6.2's stops at 1.29.0, so the two pins have to
+// move together. Every case above compares one pin to upstream; none of them
+// could see two pins that disagree with each other, which is why the checker was
+// green about a configuration that could not run at all.
+{
+    const actionPins = zizmorActionPins(REAL);
+    report(actionPins.length === 2, `both zizmor-action pins are found (got ${actionPins.length})`);
+    report(
+        actionPins.every((a) => a.sha === actionPins[0].sha) && !!actionPins[0].tag,
+        `the two action pins agree and carry a tag comment (${actionPins[0] && actionPins[0].tag})`,
+    );
+
+    // The tree as it stands, against a table that DOES offer its pinned version.
+    const supporting = {
+        ...CURRENT,
+        zizmorActionSupports: ['1.28.0', '1.29.0', CURRENT.zizmor],
+        zizmorActionTag: actionPins[0].tag,
+    };
+    report(problems(REAL, supporting).length === 0,
+        `the real tree is clean when the pinned action offers its pinned scanner`);
+
+    // The #47 tree: same pins, a table that stops short.
+    const short = { ...supporting, zizmorActionSupports: ['1.28.0', '1.29.0'] };
+    report(
+        problems(REAL, short).some((f) => /cannot install zizmor/.test(f) && f.includes(CURRENT.zizmor)),
+        `an action whose table lacks the pinned scanner is a finding (the #47 regression)`,
+    );
+
+    // A failed read resolves to nothing, and nothing must not read as agreement.
+    // This is the shape that makes a checker green while it knows less than it
+    // did before: an empty universe answers "is X in this set" with a confident
+    // no, or with silence, depending on which way the condition was written.
+    const empty = { ...supporting, zizmorActionSupports: [] };
+    report(
+        problems(REAL, empty).some((f) => /EMPTY list/.test(f)),
+        `an empty version table is a failed read, not a pass`,
+    );
+
+    // The gate and the recorder running different actions.
+    const split = tree((s, f) => (f === 'workflow-security-record.yml'
+        ? s.replace(actionPins[0].sha, 'a'.repeat(40))
+        : s));
+    report(
+        problems(split, supporting).some((f) => /pinned at 2 different commits/.test(f)),
+        `the gate and the recorder pinning different actions is a finding`,
+    );
+
+    // Upstream moved the action itself, which is how the pin rots into the
+    // failure above rather than being noticed on the day it matters.
+    const newerAction = { ...supporting, zizmorActionTag: 'v99.0.0' };
+    report(
+        problems(REAL, newerAction).some((f) => /zizmor-action is pinned to .* but the latest release is v99\.0\.0/.test(f)),
+        `a newer zizmor-action upstream is reported`,
+    );
 }
 
 // ── a half-landed actionlint bump: URL moved, checksum did not
