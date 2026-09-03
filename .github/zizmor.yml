@@ -1,0 +1,28 @@
+# zizmor configuration.
+#
+# An entry here is an ACCEPTED finding, not a silenced one: it names the rule,
+# the file, and why the obvious remediation is wrong. Anything NOT listed fails
+# the job, so a new finding of any kind is still caught.
+rules:
+  self-repository:
+    ignore:
+      # zizmor 1.30.0 asks for GitHub's self-repository form, `uses: $/...`,
+      # instead of `uses: ./...` for the three reusable workflows this file
+      # calls. THE FIX IT ASKS FOR IS REFUSED BY ANOTHER REQUIRED GATE.
+      #
+      # This was tried rather than assumed, in #46. `$/` resolved correctly --
+      # all three workflows dispatched and ran -- and actionlint failed the
+      # file: `reusable workflow call "$/.github/workflows/..." at "uses" is
+      # not following the format "owner/repo/path/to/workflow.yml@ref" nor
+      # "./path/to/workflow.yml"`. actionlint is a required check here, run by
+      # the gate in this very repository. Support is requested in
+      # rhysd/actionlint#711, still open; the latest release is v1.7.12 from
+      # 2026-03-30 and rhysd/actionlint#719 reports the maintainer inactive.
+      # The workflow-hardening pinning gate rejected it too, as "not pinned to
+      # a full 40-hex commit SHA" -- wrong, since `$/` resolves to the running
+      # commit, but moot until actionlint moves.
+      #
+      # Scoped to the one file rather than `disable: true`, so a `uses: ./`
+      # added to any other workflow here still fails. Tracked in #45; this
+      # entry comes out when actionlint can parse `$/`.
+      - self-check.yml
