@@ -31,9 +31,20 @@ concurrency:
   group: self-check-${{ github.event_name }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
+# `$/` IS THE SELF-REPOSITORY SYNTAX, and it is deliberate rather than
+# cosmetic. GitHub added it on 2026-07-30: a `uses:` beginning `$/` resolves to
+# this repository at the exact commit that is running, with no checkout and no
+# dependence on whatever the workspace happens to contain. The older `./` form
+# resolves against the runner's filesystem, so a job that checked out a
+# different ref first would silently run somebody else's definition of the gate.
+#
+# It is also what zizmor's `self-repository` audit requires as of 1.30.0, and
+# this file is scanned by the very gate it calls. Available on github.com with
+# runner 2.336.0 or newer; NOT available on GitHub Enterprise Server, which is
+# the one thing to check before copying this into a consumer that runs there.
 jobs:
   workflow-security:
-    uses: ./.github/workflows/workflow-security.yml
+    uses: $/.github/workflows/workflow-security.yml
 
   # The recording half, exercised here because its whole design turns on a
   # permission interaction that only shows up when a caller actually grants it.
@@ -44,16 +55,16 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    uses: ./.github/workflows/workflow-security-record.yml
+    uses: $/.github/workflows/workflow-security-record.yml
 
   # This repository publishes the workflow-hardening gate and did not run it.
   # Pointed at itself it reported six findings: two jobs with no timeout, two
   # never reaching harden-runner, and two harden-runner steps on audit with no
   # recorded reason. The repo that hands everyone else a gate is not exempt from
-  # it, and a local `./` reference means it always runs the definition in the
-  # commit under review rather than a published one.
+  # it, and a self-repository `$/` reference means it always runs the definition
+  # in the commit under review rather than a published one.
   workflow-hardening:
-    uses: ./.github/workflows/workflow-hardening.yml
+    uses: $/.github/workflows/workflow-hardening.yml
     with:
       script-ref: ${{ github.sha }}
 
