@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.0](https://github.com/4cloudguru/shared-workflows/compare/v1.19.0...v1.20.0) (2026-09-04)
+
+
+### Features
+
+* add the verify-vsix-signature composite action ([#56](https://github.com/4cloudguru/shared-workflows/issues/56)) ([98bf550](https://github.com/4cloudguru/shared-workflows/commit/98bf550fb3e2063e17d6872a0b0ff91f8f87de03))
+
 ## [1.19.0](https://github.com/4cloudguru/shared-workflows/compare/v1.18.2...v1.19.0) (2026-09-04)
 
 
