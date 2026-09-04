@@ -204,7 +204,21 @@ for (const file of workflowFiles) {
     const action = ref.trim().replace(/^["']|["']$/g, '')
     const comment = commentParts.join('#').trim()
 
-    if (action.startsWith('./') || action.startsWith('.\\')) return // a workflow in this repository
+    // A reference to something in THIS repository, in either of the two forms
+    // GitHub accepts. `./` resolves against the runner's filesystem; `$/` (the
+    // self-repository syntax, shipped 2026-07-30) resolves to this repository at
+    // the exact commit that is running.
+    //
+    // `$/` is not an exception grudgingly made — it is MORE pinned than the form
+    // already exempted here, because it cannot be redirected by a job that
+    // checked a different repository or ref into the workspace first. Reading it
+    // as "not pinned to a full 40-hex commit SHA" was this gate's own defect,
+    // and it is what rejected the conversion in #46 after actionlint had already
+    // been dealt with. See #45.
+    //
+    // Deliberately the exact prefix and nothing wider: a tree carrying both a
+    // `$/` reference and a mutable `@v7` must still fail on the second one.
+    if (action.startsWith('./') || action.startsWith('.\\') || action.startsWith('$/')) return
 
     if (!/@[0-9a-f]{40}$/.test(action)) {
       fail(

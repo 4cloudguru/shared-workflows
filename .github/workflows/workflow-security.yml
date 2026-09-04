@@ -154,23 +154,86 @@ jobs:
       # still rejects something before believing its green. The fixture lives
       # outside the checkout so the run above never sees it, and it carries a
       # defect zizmor does not look for -- an unknown runner label.
-      - name: actionlint detects a broken workflow
+      - name: actionlint enumerates every defect class it claims to catch
         shell: bash
         run: |
           set -euo pipefail
+
+          # WHY THIS PLANTS FIVE DEFECTS AND CHECKS THE NAMES, not one and the
+          # exit code. The earlier version of this step planted a single unknown
+          # runner label and asserted only that actionlint exited non-zero. That
+          # catches a linter which always passes; it cannot catch one that fails
+          # this fixture while being blind to a rule class the estate depends on
+          # -- and a selectively blind linter produces exactly the run record a
+          # working one does. It is the estate's own signature-blind-vs-clean
+          # lesson: exit 0 is meaningless until you check the ENUMERATED set, so
+          # a non-zero exit is too.
+          #
+          # This matters more the moment the linter is not the one that has been
+          # in place for years: whatever binary this step installs, a green gate
+          # now means "it found all five", not "it exited non-zero".
           work="$(mktemp -d)"
           mkdir -p "$work/.github/workflows"
           cat > "$work/.github/workflows/broken.yml" <<'YAML'
           name: broken
           on: push
           jobs:
-            broken:
+            bad-runner:
               runs-on: ubunut-latest
               steps:
                 - run: echo hello
+            bad-needs:
+              runs-on: ubuntu-latest
+              needs: [nonexistent-job]
+              steps:
+                - run: echo hello
+            bad-shell:
+              runs-on: ubuntu-latest
+              steps:
+                - run: echo hello
+                  shell: notashell
           YAML
-          if ./actionlint -no-color "$work/.github/workflows/broken.yml"; then
-            echo "actionlint accepted a workflow it should have rejected -- this gate proves nothing"
+
+          # The expression defect is appended rather than written in the heredoc
+          # above, and the dollar is emitted as \x24 on purpose. An expression
+          # opener written literally -- dollar followed by two braces -- is
+          # substituted by Actions ANYWHERE in a `run:` body, comments included,
+          # before bash ever sees the line. The fixture would then reach
+          # actionlint with the expression already replaced by an empty string,
+          # the [expression] rule would never fire, and this step would fail for
+          # a reason indistinguishable from the linter being blind. (Writing one
+          # in this comment is how that was discovered: actionlint rejected this
+          # very file.)
+          printf '  bad-expression:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo "\x24{{ github.evnt_name }}"\n' \
+            >> "$work/.github/workflows/broken.yml"
+
+          # The unpinned-action defect is appended for a DIFFERENT reason, and it
+          # is worth stating so nobody folds it back into the heredoc. The
+          # fixture needs a `uses:` with no ref to exercise actionlint's [action]
+          # rule -- but workflow-hardening.yml greps this file for `uses:` lines
+          # and cannot tell a real reference from one inside a heredoc, so a
+          # literal one here fails THIS repository's own pinning gate. Building
+          # the line at runtime keeps the fixture honest and the gate satisfied.
+          printf '  bad-action-ref:\n    runs-on: ubuntu-latest\n    steps:\n      - %s actions/setup-node\n' 'uses:' \
+            >> "$work/.github/workflows/broken.yml"
+
+          set +e
+          out="$(./actionlint -shellcheck= -pyflakes= -no-color "$work/.github/workflows/broken.yml" 2>&1)"
+          code=$?
+          set -e
+
+          if [ "$code" -eq 0 ]; then
+            echo "::error title=actionlint proves nothing::It accepted a workflow carrying five distinct defects."
             exit 1
           fi
-          echo "actionlint rejected the broken fixture, as a working linter must"
+
+          missing=""
+          for rule in runner-label job-needs action shell-name expression; do
+            case "$out" in *"[$rule]"*) ;; *) missing="$missing $rule" ;; esac
+          done
+          if [ -n "$missing" ]; then
+            echo "::error title=actionlint is selectively blind::It rejected the fixture but never reported:$missing. A linter that exits non-zero while ignoring a rule class looks exactly like a working one."
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          echo "actionlint enumerated all five planted defect classes, as a working linter must."
