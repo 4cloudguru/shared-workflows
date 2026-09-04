@@ -133,19 +133,29 @@ the fixed tree to roll to.
 in.** The workflows and composite actions here *are* this repository's product,
 and they live under `.github/`, so the usual instinct is wrong:
 
-| change | type |
-| --- | --- |
-| a published workflow or composite action — anything a caller executes | `feat:` / `fix:` |
-| this repository's own plumbing: `self-check.yml`, the drift canary, its tests | `ci:` |
+| change | type | release |
+| --- | --- | --- |
+| a published workflow or composite action — anything a caller executes | `feat:` / `fix:` | minor / patch |
+| this repository's own plumbing: `self-check.yml`, the drift canary, its tests | `ci:` | patch |
 
-This matters because release-please's releasable units are `feat`, `fix` and
-`deps`. A `ci:` commit **never** bumps a version, and listing `ci` in a visible
-changelog section does not change that — section visibility controls the
-changelog, not the bump. A published-behaviour change committed as `ci:` is a
-change consumers need a version for that will never get one.
+**All three release here.** release-please's *default* releasable units are
+`feat`, `fix` and `deps`, but that default goes with the default config, where
+`ci` is hidden — and a type listed in `changelog-sections` **without**
+`hidden: true` becomes releasable, not merely visible.
+`.release-please-config.json` lists `ci` unhidden deliberately, so a `ci:` commit
+cuts a patch. Verified: the only commit after v1.18.0 was a `ci:` one, and
+release-please opened `chore(main): release 1.18.1` from it.
 
-If a batch genuinely contains nothing releasable but still needs a tag, run the
-`Release` workflow by hand (`workflow_dispatch`).
+So the table is about **saying the right thing**, not about getting a release.
+Pick the type a consumer's changelog should show and the increment they should
+see, and the version follows.
+
+Keeping `ci` releasable is the forgiving choice on purpose: hiding it would make
+the naming rule load-bearing, and a caller-visible change mislabelled `ci:` would
+then silently never release.
+
+If a batch is genuinely unreleasable — all `chore:` and `test:` — and still needs
+a tag, run the `Release` workflow by hand (`workflow_dispatch`).
 
 ## Tenancy model (estate-wide)
 
