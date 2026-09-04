@@ -107,6 +107,36 @@ function tree(edit = (s) => s) {
         `the gate and the recorder pinning different scanners is a finding`);
 }
 
+// ── the OWNER is part of the actionlint pin
+//
+// The reader used to start matching at `actionlint/releases/download/`, so it
+// resolved rhysd and any fork identically while `fetchLatest` asked a hardcoded
+// rhysd for the latest version. Point the workflow at a fork and the checker
+// would compare that fork's version against rhysd's releases — an answer about a
+// different project than the one the gate runs. It fails closed at runtime
+// (`curl -sSf` 404s on a bad owner) so it was never a security hole, but it was
+// a reporting one, and reporting is this script's entire job.
+{
+    const al = actionlintPin(REAL);
+    report(!!al.owner, `the actionlint pin names an owner (${al.owner})`);
+    // Deliberately asserts the CURRENT owner. Unlike a version, which moves on
+    // routine work, the owner moving means the estate changed which project
+    // supplies a required gate's linter — see #45. This case exists to make
+    // that a reviewed edit rather than a silent one; if you are changing it on
+    // purpose, change it, and say why in the commit.
+    report(al.owner === 'rhysd', `the actionlint linter still comes from rhysd/actionlint (got ${al.owner})`);
+
+    // An unreadable owner must be a finding, not a pass. Same rule as the
+    // zizmor pin above: resolving nothing and finding nothing must not look
+    // alike.
+    const noOwner = tree((s) => s.replace(/https:\/\/github\.com\/[A-Za-z0-9._-]+\/actionlint\/releases/g,
+        'https://example.invalid/actionlint/releases'));
+    report(
+        problems(noOwner, CURRENT).some((f) => /could not resolve the actionlint download URL/.test(f) && /owner=none/.test(f)),
+        `a download URL whose owner cannot be read is a finding, not a pass`,
+    );
+}
+
 // ── the action pin, and whether it can install the scanner pin
 //
 // THE REGRESSION THESE EXIST FOR. #47 bumped `version:` to 1.30.0, this checker
