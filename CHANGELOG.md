@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.1](https://github.com/4cloudguru/shared-workflows/compare/v1.20.0...v1.20.1) (2026-09-04)
+
+
+### CI
+
+* accept $/ as a pinned self-reference, and make the linter prove it enumerated ([#58](https://github.com/4cloudguru/shared-workflows/issues/58)) ([da90381](https://github.com/4cloudguru/shared-workflows/commit/da90381ff169baf4a1a095f20ea323ac63b05f1d))
+
 ## [1.20.0](https://github.com/4cloudguru/shared-workflows/compare/v1.19.0...v1.20.0) (2026-09-04)
 
 
