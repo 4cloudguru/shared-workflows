@@ -43,12 +43,20 @@ function zizmorPins(root) {
 /** The actionlint release the workflow downloads, and the checksum it asserts. */
 function actionlintPin(root) {
     const text = fs.readFileSync(path.join(root, SECURITY), 'utf8');
-    const url = /actionlint\/releases\/download\/v([0-9.]+)\/actionlint_([0-9.]+)_([a-z0-9_]+)\.tar\.gz/.exec(text);
+    // THE OWNER IS PART OF THE PIN, and this reader used to drop it. The old
+    // pattern began at `actionlint/releases/download/`, so it matched
+    // rhysd/actionlint and any fork identically -- and `fetchLatest` then asked
+    // a HARDCODED rhysd for the latest version. Point the workflow at a fork and
+    // the checker would compare that fork's pinned version against rhysd's
+    // latest and report the difference as drift, or agreement as currency.
+    // Neither answer would be about the binary the gate actually runs.
+    const url = /github\.com\/([A-Za-z0-9._-]+)\/actionlint\/releases\/download\/v([0-9.]+)\/actionlint_([0-9.]+)_([a-z0-9_]+)\.tar\.gz/.exec(text);
     const sum = /^\s*echo\s+"([0-9a-f]{64})\s+actionlint_([0-9.]+)_/m.exec(text);
     return {
-        urlVersion: url ? url[1] : null,
-        assetVersion: url ? url[2] : null,
-        platform: url ? url[3] : null,
+        owner: url ? url[1] : null,
+        urlVersion: url ? url[2] : null,
+        assetVersion: url ? url[3] : null,
+        platform: url ? url[4] : null,
         sha256: sum ? sum[1] : null,
         sumVersion: sum ? sum[2] : null,
     };
@@ -140,9 +148,14 @@ function problems(root, latest) {
     }
 
     const al = actionlintPin(root);
+    // Owner and version come out of ONE match, so `urlVersion` resolving implies
+    // `owner` resolved too -- an `|| !al.owner` clause here would be a condition
+    // that cannot fire, which this repository has spent enough effort removing
+    // from other people's gates to not add one to its own. The owner is still
+    // REPORTED, because "which project" is the useful half of a failed read.
     if (!al.urlVersion || !al.sha256) {
         found.push(`could not resolve the actionlint download URL and checksum in ${SECURITY} ` +
-            `(url=${al.urlVersion ?? 'none'}, checksum=${al.sha256 ? 'present' : 'none'}).`);
+            `(owner=${al.owner ?? 'none'}, url=${al.urlVersion ?? 'none'}, checksum=${al.sha256 ? 'present' : 'none'}).`);
     } else {
         // A URL and a checksum naming different versions is the failure a bump
         // makes when only half of it lands: the download succeeds and the
@@ -160,11 +173,19 @@ function problems(root, latest) {
 }
 
 async function fetchLatest(root) {
-    const gh = await fetch('https://api.github.com/repos/rhysd/actionlint/releases/latest', {
+    // ASK THE OWNER THE TREE IS ACTUALLY PINNED TO, not a name compiled in here.
+    // A hardcoded owner silently answers a question about a different project
+    // the moment the pin moves, and a URL edit is exactly the kind of change
+    // that would move it.
+    const owner = actionlintPin(root).owner;
+    if (!owner) throw new Error(`could not read the actionlint owner from the download URL in ${SECURITY}`);
+    const gh = await fetch(`https://api.github.com/repos/${owner}/actionlint/releases/latest`, {
         headers: { accept: 'application/vnd.github+json', 'user-agent': 'shared-workflows-tooling-pins' },
     });
-    if (!gh.ok) throw new Error(`actionlint releases API returned ${gh.status}`);
-    const actionlint = String((await gh.json()).tag_name || '').replace(/^v/, '');
+    if (!gh.ok) throw new Error(`actionlint releases API returned ${gh.status} for ${owner}/actionlint`);
+    const release = await gh.json();
+    const actionlint = String(release.tag_name || '').replace(/^v/, '');
+    const actionlintPublishedAt = String(release.published_at || '') || null;
 
     const pypi = await fetch('https://pypi.org/pypi/zizmor/json', { headers: { accept: 'application/json' } });
     if (!pypi.ok) throw new Error(`PyPI returned ${pypi.status} for zizmor`);
@@ -201,7 +222,7 @@ async function fetchLatest(root) {
         zizmorActionTag = String((await rel.json()).tag_name || '') || null;
     }
 
-    return { actionlint, zizmor, zizmorActionSupports, zizmorActionTag };
+    return { actionlint, actionlintOwner: owner, actionlintPublishedAt, zizmor, zizmorActionSupports, zizmorActionTag };
 }
 
 async function main() {
@@ -223,11 +244,30 @@ async function main() {
     const found = problems(root, latest);
     const zp = zizmorPins(root);
     const ap = zizmorActionPins(root);
+    const alp = actionlintPin(root);
     console.log(`enumerated: ${zp.length} zizmor pin(s), ${ap.length} zizmor-action pin(s) ` +
         `(${ap[0] ? ap[0].tag || ap[0].sha.slice(0, 8) : 'none'}, offering ` +
         `${latest.zizmorActionSupports ? latest.zizmorActionSupports.length : '?'} scanner version(s)), ` +
-        `actionlint ${actionlintPin(root).urlVersion ?? 'unresolved'}; ` +
+        `actionlint ${alp.urlVersion ?? 'unresolved'} from ${alp.owner ?? 'unresolved'}/actionlint; ` +
         `upstream actionlint ${latest.actionlint ?? '?'}, zizmor ${latest.zizmor ?? '?'}`);
+
+    // SAY HOW OLD THE UPSTREAM IS, because "matches its latest published
+    // release" is true of a dead project and reads as currency. rhysd/actionlint
+    // last released 2026-03-30 and last committed 2026-04-19 while its author
+    // stayed active elsewhere, so this check is green for a reason that has
+    // nothing to do with the pin being current -- the thing it watches stopped
+    // moving. That is worth printing, and it is NOT worth failing on: a
+    // permanently red canary is as uninformative as a permanently green one, and
+    // the comparison above still fires the moment that upstream releases again,
+    // which is the event that would actually change anything.
+    if (latest.actionlintPublishedAt) {
+        const days = Math.floor((Date.now() - Date.parse(latest.actionlintPublishedAt)) / 86400000);
+        const when = latest.actionlintPublishedAt.slice(0, 10);
+        console.log(`upstream liveness: ${latest.actionlintOwner}/actionlint last released ${latest.actionlint} on ${when} (${days} days ago).` +
+            (days > 120
+                ? ' A pin matching a latest release that old means the upstream stopped, not that the pin is fresh.'
+                : ''));
+    }
     if (found.length === 0) {
         console.log('OK: every tooling pin matches its latest published release, and agrees with itself.');
         return 0;
