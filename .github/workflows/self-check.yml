@@ -142,3 +142,17 @@ jobs:
       # (terraform-registry-backend#894).
       - name: OSV scan action self-test
         run: node tests/test-osv-scan-action.js
+
+      # The publish-marketplace action, formerly three byte-identical copies of
+      # this same script in azure-pipelines-terraform, azure-pipelines-packer
+      # and azure-pipelines-release-docs. Drives the REAL script at
+      # .github/actions/publish-marketplace/publish-marketplace.js against a
+      # fake tfx -- the same file every consumer's pinned SHA resolves to, so a
+      # regression here is a regression in all three at once. Every
+      # publish-shaped fixture carries tfx's real routine preamble text: the
+      # regression that moved this file here (v1.15.2's release dying because a
+      # genuine Gallery API timeout was misread as a duplicate-version
+      # rejection) hid inside exactly the gap between what the OLD fixtures
+      # simulated and what tfx actually sends on every attempt.
+      - name: Publish-marketplace action self-test
+        run: node tests/test-publish-marketplace.js
