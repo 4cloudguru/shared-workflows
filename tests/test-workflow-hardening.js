@@ -211,6 +211,28 @@ try {
     'pinned but unlabelled',
   ])
 
+  // `$/` is GitHub's self-repository form, shipped 2026-07-30. It resolves to
+  // this repository at the exact commit that is running, so it is not merely as
+  // pinned as `./` — it is more so: `./` resolves against whatever the runner's
+  // filesystem holds, while `$/` cannot be redirected by a job that checked
+  // something else out. Treating it as unpinned was the gate's own bug, and it
+  // is what blocked the conversion attempted in #46 even after actionlint was
+  // no longer the obstacle.
+  expectPass('dollar-self-repository-ref', (dir) =>
+    editWorkflow(dir, 'beta.yml', (y) => y.replace('uses: ./.github/workflows/alpha.yml', 'uses: $/.github/workflows/alpha.yml')))
+
+  // ...and the exemption must be exactly that prefix and nothing wider. A tree
+  // carrying BOTH a `$/` reference and a genuinely mutable ref must still fail,
+  // on the mutable one — otherwise the fix is a hole rather than an exemption.
+  expectRejection(
+    'dollar-self-repository-ref-is-narrow',
+    (dir) => {
+      editWorkflow(dir, 'beta.yml', (y) => y.replace('uses: ./.github/workflows/alpha.yml', 'uses: $/.github/workflows/alpha.yml'))
+      editWorkflow(dir, 'alpha.yml', (y) => y.replace(`actions/checkout@${SHA}`, 'actions/checkout@v7'))
+    },
+    ['is not pinned to a full 40-hex commit SHA', 'actions/checkout@v7'],
+  )
+
   console.log('\nmutations — install hardening (#21):')
   expectRejection('install-workflow', (dir) => editWorkflow(dir, 'alpha.yml', (y) => y.replace('npm ci --ignore-scripts', 'npm ci')), [
     'runs without --ignore-scripts',
