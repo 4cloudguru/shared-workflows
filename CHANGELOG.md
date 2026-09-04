@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.2](https://github.com/4cloudguru/shared-workflows/compare/v1.20.1...v1.20.2) (2026-09-04)
+
+
+### CI
+
+* make the tooling-pin canary follow the owner it is pinned to, and say how old upstream is ([#60](https://github.com/4cloudguru/shared-workflows/issues/60)) ([e98739d](https://github.com/4cloudguru/shared-workflows/commit/e98739d6c14c7545d2012cc8abf7e941e0d9dc37))
+
 ## [1.20.1](https://github.com/4cloudguru/shared-workflows/compare/v1.20.0...v1.20.1) (2026-09-04)
 
 
