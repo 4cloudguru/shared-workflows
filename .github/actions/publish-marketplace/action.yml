@@ -1,0 +1,105 @@
+---
+name: Publish extension to the VS Marketplace
+description: >-
+  Publishes a packaged .vsix to the VS Marketplace via tfx-cli, with a bounded
+  retry that survives a transient upstream failure instead of burning the
+  release, and the token delivered on stdin so it never touches argv.
+
+# WHAT THIS REPLACES. Three byte-identical copies of publish-marketplace.js,
+# one in each of sethbacon/azure-pipelines-terraform, sethbacon/azure-pipelines-packer
+# and sethbacon/azure-pipelines-release-docs, kept in sync by hand. That is
+# exactly how a real regression shipped: the retry classifier's
+# "already published" pattern false-matched tfx's own routine preamble
+# ("Checking if this extension is already published", printed before EVERY
+# attempt, not just failures), so a genuine Gallery API timeout on
+# azure-pipelines-terraform's v1.15.2 release was misreported as a
+# deterministic duplicate-version rejection and never retried -- leaving the
+# GitHub Release stuck in draft with nothing published. The same defect sat
+# unfired in the other two copies, discovered only because this one fired
+# first. One definition here means the fix lands in every consumer the next
+# time each bumps its pinned SHA, not on whichever repo happens to hit the
+# failure next.
+#
+# WHY THIS IS A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW. Same reason
+# recorded on breaking-change-footers and release-pr-closing-keywords: a
+# reusable workflow reports as `<caller-job-id> / <called-job-name>`, which
+# renames the check. This job's name ("Publish to VS Marketplace") is not
+# currently a required status context anywhere, but it runs inside the
+# `marketplace` GitHub Environment's required-reviewer + deployment-branch
+# gate -- and that gate is a property of the CALLING job, not this action. A
+# composite action is a step inside the caller's own job, so the caller keeps
+# declaring `environment: marketplace` itself and nothing about that
+# protection moves, changes, or is weakened by this action.
+#
+# WHAT STAYS IN THE CALLER. Minting the token (azure/login OIDC +
+# `az account get-access-token`) and the `marketplace` environment
+# declaration both stay in the consumer's own release.yml. This action only
+# owns the retry-and-classify logic around invoking tfx -- the part that
+# was actually diverging.
+#
+# THE TOKEN NEVER TOUCHES argv OR THIS ACTION'S OWN LOGS. Passed as an env var
+# on the one step below, forwarded to the script's `MARKETPLACE_TOKEN`, which
+# feeds it to tfx on stdin (never `--token`). `::add-mask::` in the caller
+# only redacts log OUTPUT -- a token on argv would be readable in
+# /proc/<pid>/cmdline by anything else running in the job for the process's
+# lifetime (CWE-214, sethbacon/azure-pipelines-packer#109).
+
+inputs:
+  vsix-path:
+    description: Path to the packaged .vsix file to publish.
+    required: true
+  marketplace-token:
+    description: >-
+      The Marketplace access token (a minted Microsoft Entra token in every
+      current consumer). Fed to tfx on stdin inside this action -- never
+      placed in a command line, this action's inputs are not logged verbatim
+      by the runner either way.
+    required: true
+  tfx-path:
+    description: Path to the tfx-cli binary. Defaults to the consumer's local install.
+    required: false
+    default: ./node_modules/.bin/tfx
+  max-attempts:
+    description: Bounded retry attempts for a transient upstream failure.
+    required: false
+    default: "4"
+  retry-base-ms:
+    description: >-
+      Base delay for exponential backoff between attempts (base * 2^(attempt-1)).
+      Keep the worst case comfortably inside the publishing service principal's
+      access-token lifetime -- 4 attempts at the default 5000ms base spend at
+      most 35s waiting, well inside a 10-minute token.
+    required: false
+    default: "5000"
+
+runs:
+  using: composite
+  steps:
+    - name: Check the action was called with what it needs
+      shell: bash
+      env:
+        VSIX_PATH: ${{ inputs.vsix-path }}
+        HAS_TOKEN: ${{ inputs.marketplace-token != '' && 'yes' || '' }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        [ -n "$VSIX_PATH" ] || { echo "::error::vsix-path is required." >&2; exit 1; }
+        [ -n "$HAS_TOKEN" ] || { echo "::error::marketplace-token is required." >&2; exit 1; }
+        # The script has to actually be here -- github.action_path is the
+        # whole mechanism that pins the implementation to the SHA on the
+        # caller's `uses:` line, and a failure here should say so rather than
+        # surfacing as a node stack trace two steps later.
+        [ -f "$ACTION_PATH/publish-marketplace.js" ] || { echo "::error::publish-marketplace.js is missing from the action at '$ACTION_PATH'." >&2; exit 1; }
+
+    - name: Publish extension with a bounded, transient-failure-tolerant retry
+      shell: bash
+      env:
+        MARKETPLACE_TOKEN: ${{ inputs.marketplace-token }}
+        PUBLISH_MAX_ATTEMPTS: ${{ inputs.max-attempts }}
+        PUBLISH_RETRY_BASE_MS: ${{ inputs.retry-base-ms }}
+        VSIX_PATH: ${{ inputs.vsix-path }}
+        TFX_PATH: ${{ inputs.tfx-path }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        node "$ACTION_PATH/publish-marketplace.js" --vsix "$VSIX_PATH" --tfx "$TFX_PATH"

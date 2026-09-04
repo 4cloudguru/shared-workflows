@@ -120,6 +120,29 @@ Three modes, and they are not the same kind of thing:
 — read this one first. Two of its limits are settings on the consuming
 repository, and while `enforce_admins` is `false` the guard binds nobody.
 
+### `publish-marketplace`
+
+Not a guard — the other two composite actions here refuse something; this one
+does the thing itself. [`publish-marketplace`](.github/actions/publish-marketplace/)
+publishes a packaged `.vsix` to the VS Marketplace via `tfx-cli`, with a bounded
+retry that survives a transient upstream failure instead of burning the release,
+and the token delivered to `tfx` on stdin so it never touches argv. Used by
+`azure-pipelines-terraform`, `azure-pipelines-packer` and
+`azure-pipelines-release-docs`.
+
+It replaces three byte-identical copies of the same script, kept in sync by
+hand — which is exactly how a regression shipped: the retry classifier's
+duplicate-version detector false-matched `tfx`'s own routine "Checking if this
+extension is already published" preamble, printed before **every** attempt, so
+a genuine Gallery API timeout on `azure-pipelines-terraform`'s v1.15.2 release
+was misreported as a deterministic rejection and never retried, leaving the
+release stuck in draft. The same defect sat unfired, uncopied, in the other two
+consumers. Composite action for the same reason as the two guards above: the
+`marketplace` GitHub Environment's required-reviewer + deployment-branch gate is
+a property of the *calling* job (`environment: marketplace` stays declared in
+each consumer's own `release.yml`), and a reusable workflow would run as a
+separate job with no way to carry that gate with it.
+
 ## Tenancy model (estate-wide)
 
 The suite is moving to an explicit tenancy model: **the host is the content tenant**
