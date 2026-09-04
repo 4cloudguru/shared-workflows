@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.0](https://github.com/4cloudguru/shared-workflows/compare/v1.18.2...v1.19.0) (2026-09-04)
+
+
+### Features
+
+* add the publish-marketplace composite action ([#54](https://github.com/4cloudguru/shared-workflows/issues/54)) ([498c8e6](https://github.com/4cloudguru/shared-workflows/commit/498c8e6f94c561163810e011e131dd67bfcdcf8f))
+
 ## [1.18.2](https://github.com/4cloudguru/shared-workflows/compare/v1.18.1...v1.18.2) (2026-09-04)
 
 
