@@ -143,6 +143,24 @@ a property of the *calling* job (`environment: marketplace` stays declared in
 each consumer's own `release.yml`), and a reusable workflow would run as a
 separate job with no way to carry that gate with it.
 
+### `verify-vsix-signature`
+
+Also not a guard in the "what it refuses" sense above.
+[`verify-vsix-signature`](.github/actions/verify-vsix-signature/) installs
+cosign and verifies a packaged `.vsix` against its keyless sign-blob bundle
+before the artifact is published or attached to a release. Used by
+`azure-pipelines-terraform`, `azure-pipelines-packer` and
+`azure-pipelines-release-docs`, found while comparing all three consumers'
+publish jobs line by line to centralize `publish-marketplace` (above):
+terraform and release-docs each ran this as a hand-copied shell block, twice
+each (once before publishing, once before attaching to the draft GitHub
+Release); packer had no equivalent gate anywhere, so a substituted artifact
+between the sign job and the publish job would have reached the Marketplace
+from packer undetected. Same composite-action reasoning as the other two:
+this step runs inside whatever job and Environment gate the caller already
+has, and never has to answer which repository's environment protection
+would apply if it were a job of its own.
+
 ## Releasing this repository
 
 Releases are cut by release-please, from `.github/workflows/release.yml`, which

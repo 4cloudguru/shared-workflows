@@ -156,3 +156,11 @@ jobs:
       # simulated and what tfx actually sends on every attempt.
       - name: Publish-marketplace action self-test
         run: node tests/test-publish-marketplace.js
+
+      # The pre-publish/pre-release cosign integrity gate, formerly a hand-copied
+      # shell block in azure-pipelines-terraform and azure-pipelines-release-docs
+      # (two call sites each) and missing entirely from azure-pipelines-packer.
+      # Extracted from the action's own body the same way the footer guard's
+      # test is, so a mutation of the real script cannot pass silently.
+      - name: Verify-vsix-signature action self-test
+        run: node tests/test-verify-vsix-signature.js

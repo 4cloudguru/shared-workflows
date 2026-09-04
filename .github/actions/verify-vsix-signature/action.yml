@@ -1,0 +1,91 @@
+---
+name: Verify a .vsix cosign signature before it is trusted
+description: >-
+  Installs cosign and verifies a packaged .vsix against its keyless
+  sign-blob bundle, pinning the signer identity and OIDC issuer, before the
+  artifact is published or attached to a release.
+
+# WHAT THIS REPLACES. azure-pipelines-terraform and azure-pipelines-release-docs
+# each ran this as an inline shell block (cosign-installer + cosign verify-blob)
+# in their publish-marketplace job, kept in sync by hand alongside the same
+# block ALSO duplicated for their own sign-and-attach-to-release job.
+# azure-pipelines-packer's publish job never had this step at all -- found by
+# comparing all three jobs line by line while centralizing publish-marketplace
+# (2026-09-04), not by an audit that was looking for it. A compromised or
+# substituted artifact between the sign job and the publish job would have
+# reached the Marketplace from packer undetected.
+#
+# WHY A COMPOSITE ACTION. Same reasoning as publish-marketplace: this step
+# runs inside whatever job the caller already has (their own `marketplace`
+# Environment gate or their own sign-and-attach job), so it has to be a STEP,
+# not a job. A reusable WORKFLOW's job can declare its own `environment:`,
+# but which repository's protection rules and secrets that resolves against
+# when the workflow file lives in a different repository than the caller is
+# not something this estate could pin down with confidence from documentation
+# alone, and the cost of getting it wrong is a required-reviewer gate silently
+# not applying to a live Marketplace-publish credential. A composite action
+# never raises the question: it is a step inside the caller's own job, so the
+# caller's own `environment:` and `permissions:` are the only ones that were
+# ever in scope.
+#
+# THIS DOES NOT INSTALL cosign-installer'S OWN NETWORK NEEDS FOR YOU. The
+# calling job's harden-runner allowlist still has to include
+# release-assets.githubusercontent.com (the cosign binary), raw.githubusercontent.com
+# (cosign-installer's own bootstrap-vs-requested-release verification --
+# observed on every sampled real run, not conditionally) and
+# tuf-repo-cdn.sigstore.dev (verify-blob's Sigstore TUF trust root fetch).
+
+inputs:
+  certificate-identity-regexp:
+    description: >-
+      Passed straight to `cosign verify-blob --certificate-identity-regexp`.
+      No default -- an identity check with a guessed default is worse than
+      one that fails loudly when the caller forgot to set it.
+    required: true
+  certificate-oidc-issuer:
+    description: The OIDC issuer that must have signed the certificate.
+    required: false
+    default: https://token.actions.githubusercontent.com
+  vsix-path:
+    description: >-
+      Path to the .vsix to verify. Defaults to the single .vsix file in the
+      current directory, matching every consumer's existing
+      `find . -maxdepth 1 -name "*.vsix" -print -quit` convention.
+    required: false
+    default: ""
+  bundle-path:
+    description: Path to the cosign bundle. Defaults to `<vsix-path>.bundle`.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+    - name: Verify the .vsix signature
+      shell: bash
+      env:
+        VSIX_PATH: ${{ inputs.vsix-path }}
+        BUNDLE_PATH: ${{ inputs.bundle-path }}
+        CERTIFICATE_IDENTITY_REGEXP: ${{ inputs.certificate-identity-regexp }}
+        CERTIFICATE_OIDC_ISSUER: ${{ inputs.certificate-oidc-issuer }}
+      run: |
+        set -euo pipefail
+        VSIX_FILE="$VSIX_PATH"
+        if [ -z "$VSIX_FILE" ]; then
+          VSIX_FILE=$(find . -maxdepth 1 -name "*.vsix" -print -quit)
+        fi
+        if [ -z "$VSIX_FILE" ]; then
+          echo "::error::No .vsix file found in the current directory, and vsix-path was not set." >&2
+          exit 1
+        fi
+        BUNDLE_FILE="$BUNDLE_PATH"
+        if [ -z "$BUNDLE_FILE" ]; then
+          BUNDLE_FILE="${VSIX_FILE}.bundle"
+        fi
+        cosign verify-blob \
+          --bundle "$BUNDLE_FILE" \
+          --certificate-identity-regexp "$CERTIFICATE_IDENTITY_REGEXP" \
+          --certificate-oidc-issuer "$CERTIFICATE_OIDC_ISSUER" \
+          "$VSIX_FILE"
