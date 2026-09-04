@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.2](https://github.com/4cloudguru/shared-workflows/compare/v1.18.1...v1.18.2) (2026-09-04)
+
+
+### CI
+
+* correct what counts as a releasable commit here ([#52](https://github.com/4cloudguru/shared-workflows/issues/52)) ([c28f616](https://github.com/4cloudguru/shared-workflows/commit/c28f61635476e6d9155bd811b9b9757833ff6a1f))
+
 ## [1.18.1](https://github.com/4cloudguru/shared-workflows/compare/v1.18.0...v1.18.1) (2026-09-04)
 
 
