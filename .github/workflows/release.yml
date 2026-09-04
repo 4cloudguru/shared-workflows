@@ -21,29 +21,36 @@
 # broken commit. A hand-rolled copy would keep working while the thing it
 # represents was broken.
 #
-# WHAT COUNTS AS A RELEASE HERE -- read this before wondering why no release PR
-# appeared.
+# WHAT COUNTS AS A RELEASE HERE.
 #
-# release-please's releasable units are `feat`, `fix` and `deps`. `ci`, `chore`,
-# `build`, `test` and `docs` never bump a version, and listing `ci` in a visible
-# changelog section does NOT change that -- section visibility controls the
-# changelog, not the bump.
+# release-please's DEFAULT releasable units are `feat`, `fix` and `deps`. That
+# default goes with the default config, where `ci`, `chore`, `build` and `test`
+# are hidden -- and a type listed in `changelog-sections` WITHOUT `hidden: true`
+# becomes releasable, not merely visible. `.release-please-config.json` here
+# lists `ci` unhidden deliberately, so a `ci:` commit cuts a PATCH.
 #
-# In THIS repository the workflows and composite actions ARE the product. A
-# change to a published definition is therefore `feat:` or `fix:`, NOT `ci:`,
-# even though the file it edits lives under .github/. Reserve `ci:` for this
-# repository's own plumbing -- self-check, the drift canary -- where a change
-# genuinely does not affect a caller.
+# Measured, because the first draft of this comment claimed the opposite: the
+# only commit after v1.18.0 was `ci: release this repository with the definition
+# it publishes (#49)`, and release-please opened `chore(main): release 1.18.1`
+# with that commit under a `CI` heading. Visibility does control releasability
+# for the non-default types.
 #
-# That distinction is not hypothetical. Of the four commits behind v1.18.0,
-# `fix(signature-replay)`, `fix(release-pr-guard)` and `feat(osv-scan)` would
-# each have produced a release PR on their own. The zizmor bump was committed as
-# `ci:` and would not have, despite changing what a REQUIRED check enforces in
-# every consumer -- which is exactly the kind of change a consumer needs a
-# version for.
+# CHOOSE THE TYPE FOR THE SEMANTICS, NOT TO GET A RELEASE. In this repository
+# the workflows and composite actions ARE the product even though they live
+# under .github/, so a change a caller executes is `feat:` or `fix:` and gets
+# the right minor/patch signal; `ci:` is for this repo's own plumbing --
+# self-check, the drift canary -- and cuts a patch. Everything releases; what
+# differs is the increment and the changelog section a consumer reads.
 #
-# `workflow_dispatch` is here so a release can still be forced when a genuinely
-# unreleasable batch nonetheless needs a tag.
+# Keeping `ci` releasable is the forgiving choice on purpose. Hiding it would
+# make that naming rule load-bearing: a caller-visible change mislabelled `ci:`
+# would then silently never release, which is precisely the failure this file
+# exists to prevent. The zizmor bump behind v1.18.0 was exactly that mislabel --
+# committed `ci:` while changing what a REQUIRED check enforces in every
+# consumer -- and under this config it would still have produced a version.
+#
+# `workflow_dispatch` is here so a release can still be forced when a batch is
+# genuinely unreleasable (all `chore`/`test`) and nonetheless needs a tag.
 name: Release
 
 "on":
