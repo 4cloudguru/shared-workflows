@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.1](https://github.com/4cloudguru/shared-workflows/compare/v1.18.0...v1.18.1) (2026-09-04)
+
+
+### CI
+
+* release this repository with the definition it publishes ([#49](https://github.com/4cloudguru/shared-workflows/issues/49)) ([556b27f](https://github.com/4cloudguru/shared-workflows/commit/556b27f2381247850732925d494775d42076f4c2))
+
 ## 1.18.0 (2026-09-03)
 
 Cut by hand, and the last one that will be. This file starts here because
