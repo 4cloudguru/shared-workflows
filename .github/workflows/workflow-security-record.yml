@@ -92,12 +92,12 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
 
-      - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+      - uses: zizmorcore/zizmor-action@70fb788f84895a7701f5643d103d587e460b5c99 # v0.6.3
         with:
           # Kept in step with workflow-security.yml deliberately: the two jobs
           # must scan with the SAME scanner, or the tab records findings from a
           # different version than the one gating the pull request.
-          version: "1.29.0"
+          version: "1.30.0"
           # true here, false there -- the difference IS the division of labour.
           # This uploads SARIF and therefore exits 0 regardless of findings; the
           # other file is what makes a finding fail.

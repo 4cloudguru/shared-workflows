@@ -1,0 +1,79 @@
+---
+# This repository releases ITSELF with the definition it publishes.
+#
+# WHY THIS DID NOT EXIST, AND WHY THAT WAS THE BUG
+#
+# .github/workflows/release-please.yml in this repository is `workflow_call`
+# only. It is the definition TWELVE other repositories call to get their
+# releases, and nothing called it here -- there was no config, no manifest and
+# no caller. Every tag from v1.13.0 to v1.18.0 was cut by hand.
+#
+# The consequence showed up on 2026-09-03: four releasable commits sat on main
+# behind v1.17.0, twelve repositories rolled their pins to an UNTAGGED commit
+# because there was no tag on the fixed tree to roll to, and one of them carries
+# a "retag when v1.18.0 cuts" note waiting on a release nothing was going to
+# produce. The repo that hands everyone else their release automation ran none
+# itself -- the same observation self-check.yml already makes about the gates.
+#
+# Calling ./.github/workflows/release-please.yml rather than duplicating the job
+# is deliberate, for the same reason self-check.yml calls the security gate: if
+# the shared definition breaks, it breaks HERE first, before a caller pins the
+# broken commit. A hand-rolled copy would keep working while the thing it
+# represents was broken.
+#
+# WHAT COUNTS AS A RELEASE HERE.
+#
+# release-please's DEFAULT releasable units are `feat`, `fix` and `deps`. That
+# default goes with the default config, where `ci`, `chore`, `build` and `test`
+# are hidden -- and a type listed in `changelog-sections` WITHOUT `hidden: true`
+# becomes releasable, not merely visible. `.release-please-config.json` here
+# lists `ci` unhidden deliberately, so a `ci:` commit cuts a PATCH.
+#
+# Measured, because the first draft of this comment claimed the opposite: the
+# only commit after v1.18.0 was `ci: release this repository with the definition
+# it publishes (#49)`, and release-please opened `chore(main): release 1.18.1`
+# with that commit under a `CI` heading. Visibility does control releasability
+# for the non-default types.
+#
+# CHOOSE THE TYPE FOR THE SEMANTICS, NOT TO GET A RELEASE. In this repository
+# the workflows and composite actions ARE the product even though they live
+# under .github/, so a change a caller executes is `feat:` or `fix:` and gets
+# the right minor/patch signal; `ci:` is for this repo's own plumbing --
+# self-check, the drift canary -- and cuts a patch. Everything releases; what
+# differs is the increment and the changelog section a consumer reads.
+#
+# Keeping `ci` releasable is the forgiving choice on purpose. Hiding it would
+# make that naming rule load-bearing: a caller-visible change mislabelled `ci:`
+# would then silently never release, which is precisely the failure this file
+# exists to prevent. The zizmor bump behind v1.18.0 was exactly that mislabel --
+# committed `ci:` while changing what a REQUIRED check enforces in every
+# consumer -- and under this config it would still have produced a version.
+#
+# `workflow_dispatch` is here so a release can still be forced when a batch is
+# genuinely unreleasable (all `chore`/`test`) and nonetheless needs a tag.
+name: Release
+
+"on":
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    uses: ./.github/workflows/release-please.yml
+    # Exactly one secret, named. NOT `secrets: inherit` -- that forwards every
+    # secret in this repository to the called workflow, which zizmor flags
+    # (secrets-inherit) and which would be a strange over-grant to introduce
+    # through a workflow whose whole purpose is least privilege.
+    #
+    # The called definition preflights both credentials and fails with an
+    # actionable message when either is empty. This repository had NO repository
+    # variables and NO repository secrets when this landed, so if
+    # RELEASE_DISPATCH_APP_ID and RELEASE_DISPATCH_APP_KEY are not provided at
+    # the organisation level, the first run will say so plainly rather than
+    # failing with "Bad credentials".
+    secrets:
+      RELEASE_DISPATCH_APP_KEY: ${{ secrets.RELEASE_DISPATCH_APP_KEY }}
