@@ -27,3 +27,34 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+
+  # ---------------------------------------------------------------------------
+  # npm (.github/actions/commit-message-check: the parser the gate shares with
+  # release-please)
+  # ---------------------------------------------------------------------------
+  # This entry MOVED here with the action itself. It previously existed in each
+  # of the thirteen consumers, one copy per hand-copied gate, and deleting those
+  # copies without adding this one would have left the pin covered by nobody --
+  # the exact silence that makes a SHA pin rot while looking deliberate.
+  #
+  # The gate is only meaningful while it parses the way release-please does, so
+  # these bumps want checking against release-please's own dependency rather
+  # than merging on green.
+  - package-ecosystem: npm
+    directory: /.github/actions/commit-message-check
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      commit-message-check:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7
