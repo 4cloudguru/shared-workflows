@@ -133,6 +133,24 @@ jobs:
       - name: Release-PR closing-keyword guard self-test
         run: node tests/test-release-pr-closing-keywords.js
 
+      # The commit-message gate, formerly a verify.mjs hand-copied into THIRTEEN
+      # repositories -- all thirteen byte-identical at the time of the move,
+      # which is what made it safe to lift unchanged and is also why the fix for
+      # the reference-trailer defect reached exactly one of them.
+      #
+      # Unlike every other action here it has a DEPENDENCY, and deliberately:
+      # release-please reads commits with `@conventional-commits/parser`, so an
+      # approximation of that grammar which disagrees with it would be green
+      # about precisely the commits release-please drops in silence. The install
+      # runs here for the same reason the action runs it -- the suite drives the
+      # real verify.mjs, which imports the parser.
+      - name: Install the commit-message gate's parser
+        working-directory: .github/actions/commit-message-check
+        run: npm ci --ignore-scripts
+
+      - name: Commit-message gate self-test
+        run: node tests/test-commit-message-check.js
+
       # The osv-scan action's own body, executed against a stubbed `docker` that
       # returns each exit code the real scanner produces. The property is that
       # 0, 1 and 127 stay three different answers: `continue-on-error` collapses

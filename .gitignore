@@ -1,0 +1,4 @@
+# The commit-message-check action installs @conventional-commits/parser at run
+# time (`npm ci --ignore-scripts` in the action path). The lockfile is committed
+# so the install is reproducible; the tree it produces is not.
+node_modules/
