@@ -1,0 +1,94 @@
+---
+name: release-please can read the merged commit
+description: >-
+  Fail a pull request whose squash commit release-please would drop in silence,
+  or that carries a non-closing reference trailer which renders as a closing
+  keyword and closes an issue the release did not complete.
+
+# WHY THIS IS A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW.
+#
+# A reusable workflow reports as `<caller-job-id> / <called-job-name>`, which
+# renames the check. A composite action is called as a STEP inside the caller's
+# existing job, so the job keeps its name and the check keeps reporting under
+# whatever context branch protection already requires. No branch protection
+# moves. Same reasoning as `breaking-change-footers`, and it matters more here:
+# thirteen repositories call this, and a required context that never appears is
+# indistinguishable from one still running.
+#
+# WHAT THIS REPLACES. A verify.mjs hand-copied into THIRTEEN repositories, all
+# thirteen byte-identical at the time of the move. That is what made it safe to
+# lift unchanged, and it is also the problem: the fix for the reference-trailer
+# defect landed in terraform-state-manager-backend and reached none of the other
+# twelve, each of which is a release-please repository with the same exposure.
+#
+# WHAT IT CHECKS, and why each half exists:
+#
+#   1. THE SQUASH PARSES. release-please reads commits with
+#      `@conventional-commits/parser`, a strict reading of the Conventional
+#      Commits grammar, and a message it rejects is dropped in SILENCE: no
+#      changelog entry, no version bump, no BREAKING CHANGE footer. It logs
+#      `commit could not be parsed`, reports success, and every later run
+#      re-reads the same commit and skips it again. The usual cause is a body
+#      line that STARTS with `name(`, which the grammar reads as a structured
+#      token whose brackets must be flat and closed.
+#
+#      This is why the action installs the parser rather than approximating the
+#      grammar: an approximation that disagrees with release-please is worse
+#      than no check, because it is green about the commits that get dropped.
+#
+#   2. NO NON-CLOSING REFERENCE TRAILER. conventional-changelog prints the word
+#      `closes` in front of EVERY reference it extracts, whatever verb wrote it,
+#      so `Refs #393` renders as `closes [#393]` in the generated release body.
+#      That body's squash commit is what GitHub reads for closing keywords, so
+#      the reference word the author chose is discarded and the next release
+#      closes the issue anyway. It cannot be patched out downstream: the
+#      reference is baked into a commit on `main`, so release-please
+#      regenerates it on every run (tsm-backend release PR #515 was hand-patched
+#      twice). Rejecting the trailer shape at commit time is the only fix that
+#      holds.
+
+inputs:
+  gh-token:
+    description: Token used to read the pull request's commits. Needs pull-requests:read.
+    required: true
+  pr-number:
+    description: The pull request number.
+    required: true
+  pr-title:
+    description: >-
+      The pull request title. Used as the squash subject when the PR has more
+      than one commit, mirroring GitHub's COMMIT_OR_PR_TITLE setting.
+    required: true
+  repo:
+    description: owner/repo the pull request belongs to.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # --ignore-scripts: npm runs dependency preinstall/install/postinstall hooks
+    # by default, which is arbitrary code from the dependency tree executing
+    # before anything here has looked at it. The only dependency is
+    # @conventional-commits/parser, which declares no install scripts, so
+    # nothing is lost by refusing to run them.
+    - name: Install the parser release-please uses
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci --ignore-scripts
+
+    - name: Parse the commit this PR would squash into main
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        PR_TITLE: ${{ inputs.pr-title }}
+        REPO: ${{ inputs.repo }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+
+        gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/commits" \
+          --jq '.[] | {sha: .sha, message: .commit.message, parents: (.parents | length)}' \
+          > commits.ndjson
+
+        node "$ACTION_PATH/verify.mjs" commits.ndjson
