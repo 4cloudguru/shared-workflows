@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.0](https://github.com/4cloudguru/shared-workflows/compare/v1.20.2...v1.21.0) (2026-09-07)
+
+
+### Features
+
+* **commit-message-check:** one shared gate, replacing thirteen hand-copies ([#63](https://github.com/4cloudguru/shared-workflows/issues/63)) ([c2af0a1](https://github.com/4cloudguru/shared-workflows/commit/c2af0a1675c407d112bdb8022885ad0138dbf8ff))
+
 ## [1.20.2](https://github.com/4cloudguru/shared-workflows/compare/v1.20.1...v1.20.2) (2026-09-04)
 
 
