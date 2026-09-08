@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.0](https://github.com/4cloudguru/shared-workflows/compare/v1.21.0...v1.22.0) (2026-09-08)
+
+
+### Features
+
+* **workflow-hardening:** derive the checker commit instead of taking a second pin ([#66](https://github.com/4cloudguru/shared-workflows/issues/66)) ([cae3145](https://github.com/4cloudguru/shared-workflows/commit/cae314547270eb99dc8c288d56b464af5a08dde6))
+
 ## [1.21.0](https://github.com/4cloudguru/shared-workflows/compare/v1.20.2...v1.21.0) (2026-09-07)
 
 
