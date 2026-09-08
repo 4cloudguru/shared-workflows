@@ -53,9 +53,12 @@ jobs:
   # it, and a local `./` reference means it always runs the definition in the
   # commit under review rather than a published one.
   workflow-hardening:
+    # Passes NO script-ref, deliberately: the workflow derives the commit from
+    # `github.job_workflow_sha`, and this repository is the first caller to
+    # prove that. It previously passed `github.sha`, which on a pull_request is
+    # the MERGE commit -- not the commit the workflow file was resolved at, and
+    # so exactly the skew the derivation exists to make impossible.
     uses: ./.github/workflows/workflow-hardening.yml
-    with:
-      script-ref: ${{ github.sha }}
 
   # The footer guard is 128 lines of shell shared by nine repositories, so a
   # mistake in it is a mistake in nine places at once -- which is exactly what
