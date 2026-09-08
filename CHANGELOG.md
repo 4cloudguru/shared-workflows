@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.1](https://github.com/4cloudguru/shared-workflows/compare/v1.22.0...v1.22.1) (2026-09-08)
+
+
+### Reverts
+
+* **workflow-hardening:** github.job_workflow_sha does not reliably populate ([#68](https://github.com/4cloudguru/shared-workflows/issues/68)) ([e8676b9](https://github.com/4cloudguru/shared-workflows/commit/e8676b91db1547f512c16b7da9506c3b4c71091f))
+
 ## [1.22.0](https://github.com/4cloudguru/shared-workflows/compare/v1.21.0...v1.22.0) (2026-09-08)
 
 
