@@ -22,16 +22,10 @@ on:
     inputs:
       script-ref:
         description: >-
-          Commit of 4cloudguru/shared-workflows to take the checker from.
-
-          LEAVE THIS UNSET. It now defaults to `github.job_workflow_sha`, which
-          IS the commit this workflow was resolved at, so the checker and the
-          workflow cannot disagree and there is no second pin for a bot to
-          half-update. Passing it explicitly is still accepted for callers that
-          have not dropped it yet, and is verified against the resolved commit
-          rather than trusted.
-        required: false
-        default: ""
+          Commit of 4cloudguru/shared-workflows to take the checker from. MUST
+          be the same commit this workflow is pinned at on the caller's `uses:`
+          line.
+        required: true
         type: string
 
 permissions:
@@ -68,72 +62,11 @@ jobs:
       # than from the caller, so a repo cannot weaken its own gate by editing
       # its copy -- which is the failure mode of shipping the script into
       # fourteen repos.
-      # WHY THIS STEP EXISTS AT ALL: `script-ref` used to be a required input
-      # naming the same commit as the caller's `uses:` pin, and the checker
-      # rejected a caller whose two pins disagreed. That check was correct and
-      # kept firing, because the property it protects is one no bot can
-      # maintain: Dependabot understands a SHA in a `uses:` reference and
-      # updates it, while the same SHA passed as an INPUT VALUE is opaque to it.
-      # Every bump therefore arrived half-applied and red until a human moved
-      # the second line -- once per repository, forever.
-      #
-      # `github.job_workflow_sha` is the commit of the REUSABLE WORKFLOW FILE
-      # this job is running, which is exactly the commit the caller pinned. So
-      # the second pin is not needed: it can be derived, and a derived value
-      # cannot skew from the thing it is derived from.
-      #
-      # IT MUST NEVER FALL BACK. An empty ref does not fail a checkout -- it
-      # silently resolves the DEFAULT BRANCH, which would turn a pinned gate
-      # into a mutable one, the exact opposite of what pinning is for. So an
-      # unusable value is a hard error here rather than a checkout that
-      # succeeds against the wrong tree.
-      - name: Resolve the commit to take the checker from
-        id: checker
-        env:
-          REQUESTED: ${{ inputs.script-ref }}
-          RESOLVED: ${{ github.job_workflow_sha }}
-          CALLER_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          # A LOCAL `./` CALL LEAVES job_workflow_sha EMPTY. GitHub populates it
-          # only for a workflow referenced from ANOTHER repository; a `./`
-          # reference has no separate commit to name, because it IS the caller's
-          # own commit. This repository calls its own hardening workflow that
-          # way, and that is how this was found: the step failed closed on its
-          # very first run, which is the right failure and not a usable one.
-          #
-          # The fallback is correct for exactly that case and safe in the other:
-          # for a REMOTE caller, github.sha is a commit of the CALLER's
-          # repository, which does not exist in shared-workflows, so the checkout
-          # fails loudly rather than resolving something plausible.
-          if [[ -z "$RESOLVED" ]]; then
-            RESOLVED="$CALLER_SHA"
-          fi
-
-          # The shape rule applies to whichever value survived, fallback included.
-          if [[ ! "$RESOLVED" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::neither github.job_workflow_sha nor github.sha gave a 40-character commit (got '${RESOLVED}')."                  "The checker's commit cannot be derived, and an empty ref would check out the"                  "default branch and make this gate mutable. Refusing to run."
-            exit 1
-          fi
-
-          # A caller that still passes the old input is held to it rather than
-          # ignored: if the two disagree, the caller's tree says one thing and
-          # this gate would do another, and silently preferring either is how a
-          # reviewer ends up reading a diff that is not what ran.
-          if [[ -n "$REQUESTED" && "$REQUESTED" != "$RESOLVED" ]]; then
-            echo "::error::script-ref is ${REQUESTED:0:8} but this workflow was resolved at"                  "${RESOLVED:0:8}. Drop the script-ref input -- it now defaults to the"                  "resolved commit, which is why the two can no longer be made to disagree."
-            exit 1
-          fi
-
-          echo "ref=${RESOLVED}" >> "$GITHUB_OUTPUT"
-          echo "Checker will be taken from ${RESOLVED}."
-
       - name: Check out the shared checker
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: 4cloudguru/shared-workflows
-          ref: ${{ steps.checker.outputs.ref }}
+          ref: ${{ inputs.script-ref }}
           path: .shared-workflows
           persist-credentials: false
 
