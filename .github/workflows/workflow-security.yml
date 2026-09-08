@@ -148,20 +148,7 @@ jobs:
           set -euo pipefail
           # shellcheck/pyflakes are separate concerns and not installed here; the
           # schema check is the part that prevents a startup failure.
-          #
-          # THE ONE IGNORE, and why it is this narrow. `github.job_workflow_sha`
-          # is a documented context property -- the commit of the reusable
-          # workflow file a job is running -- and workflow-hardening.yml derives
-          # the checker's commit from it so there is no second pin for Dependabot
-          # to half-update. actionlint's type model for the `github` context does
-          # not list it, so it reports a real property as undefined.
-          #
-          # The pattern names that ONE property. Any other undefined property --
-          # a typo like `github.evnt_name` -- produces a different message and is
-          # still rejected, which the falsification step below proves against
-          # this exact invocation rather than a cleaner one.
-          ./actionlint -shellcheck= -pyflakes= -color \
-            -ignore 'property "job_workflow_sha" is not defined'
+          ./actionlint -shellcheck= -pyflakes= -color
 
       # Same contract this repository applies to its node gates: prove the linter
       # still rejects something before believing its green. The fixture lives
@@ -231,13 +218,7 @@ jobs:
             >> "$work/.github/workflows/broken.yml"
 
           set +e
-          # Carries the SAME -ignore as the real invocation above. Proving that a
-          # cleaner linter catches these five would say nothing about the one
-          # that actually runs, and the expression case below is precisely an
-          # undefined `github` property -- the class the ignore touches.
-          out="$(./actionlint -shellcheck= -pyflakes= -no-color \
-            -ignore 'property "job_workflow_sha" is not defined' \
-            "$work/.github/workflows/broken.yml" 2>&1)"
+          out="$(./actionlint -shellcheck= -pyflakes= -no-color "$work/.github/workflows/broken.yml" 2>&1)"
           code=$?
           set -e
 
