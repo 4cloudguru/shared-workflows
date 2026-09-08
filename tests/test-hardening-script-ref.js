@@ -69,13 +69,19 @@ if (!script) {
 const SHA_A = '9276df8e0bdb3152e2529ab98c8b99cfb9e22d4b';
 const SHA_B = '8b7215beac6420881d20d52f9b096edff4238ec9';
 
-function run({ requested = '', resolved = '' }) {
+function run({ requested = '', resolved = '', caller = '' }) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'script-ref-'));
     const out = path.join(dir, 'output');
     fs.writeFileSync(out, '');
     const proc = spawnSync('bash', ['-c', script], {
         encoding: 'utf8',
-        env: { ...process.env, REQUESTED: requested, RESOLVED: resolved, GITHUB_OUTPUT: out },
+        env: {
+            ...process.env,
+            REQUESTED: requested,
+            RESOLVED: resolved,
+            CALLER_SHA: caller,
+            GITHUB_OUTPUT: out,
+        },
     });
     return {
         code: proc.status,
@@ -88,18 +94,38 @@ console.log('workflow-hardening: resolving the checker commit\n');
 
 // The ordinary case after a caller drops the input.
 {
-    const r = run({ resolved: SHA_A });
+    const r = run({ resolved: SHA_A, caller: SHA_B });
     report(r.code === 0, `derives the commit when no script-ref is passed (exit ${r.code})`);
+    report(!r.output.includes(`ref=${SHA_B}`), 'prefers the workflow commit over the caller commit');
     report(r.output.includes(`ref=${SHA_A}`), 'publishes the resolved commit as the step output');
 }
 
-// THE ONE THAT MATTERS. An empty ref checks out the default branch instead of
-// failing, so this must be a hard error and not a fallback.
+// A LOCAL `./` CALL LEAVES job_workflow_sha EMPTY. GitHub populates it only for
+// a workflow referenced from another repository; a `./` reference has no
+// separate commit to name, because it IS the caller's commit. This repository
+// calls its own hardening workflow that way, and found it the first time the
+// derivation ran -- the step failed closed, which is the right failure, but the
+// derivation still has to work.
 {
-    const r = run({ resolved: '' });
-    report(r.code !== 0, 'REFUSES an empty job_workflow_sha rather than checking out a default branch');
+    const r = run({ resolved: '', caller: SHA_A });
+    report(r.code === 0, `falls back to the caller's commit for a local ./ call (exit ${r.code})`);
+    report(r.output.includes(`ref=${SHA_A}`), 'uses the caller commit as the checker commit');
+}
+
+// THE ONE THAT MATTERS. An empty ref checks out the default branch instead of
+// failing, so with NOTHING usable this must be a hard error and not a fallback.
+{
+    const r = run({ resolved: '', caller: '' });
+    report(r.code !== 0, 'REFUSES when neither commit is available, rather than checking out a default branch');
     report(/job_workflow_sha/.test(r.text), 'names the context that was unusable');
     report(!r.output.includes('ref='), 'publishes no ref when it refuses');
+}
+
+// The fallback must be held to the same shape rule as the derived value, or it
+// re-opens mutability by the door the shape check was closing.
+{
+    const r = run({ resolved: '', caller: 'main' });
+    report(r.code !== 0, 'refuses a caller commit that is not a 40-character commit');
 }
 
 // A branch name is not a commit. Accepting one would re-open mutability by a

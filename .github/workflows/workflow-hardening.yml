@@ -92,11 +92,28 @@ jobs:
         env:
           REQUESTED: ${{ inputs.script-ref }}
           RESOLVED: ${{ github.job_workflow_sha }}
+          CALLER_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
+          # A LOCAL `./` CALL LEAVES job_workflow_sha EMPTY. GitHub populates it
+          # only for a workflow referenced from ANOTHER repository; a `./`
+          # reference has no separate commit to name, because it IS the caller's
+          # own commit. This repository calls its own hardening workflow that
+          # way, and that is how this was found: the step failed closed on its
+          # very first run, which is the right failure and not a usable one.
+          #
+          # The fallback is correct for exactly that case and safe in the other:
+          # for a REMOTE caller, github.sha is a commit of the CALLER's
+          # repository, which does not exist in shared-workflows, so the checkout
+          # fails loudly rather than resolving something plausible.
+          if [[ -z "$RESOLVED" ]]; then
+            RESOLVED="$CALLER_SHA"
+          fi
+
+          # The shape rule applies to whichever value survived, fallback included.
           if [[ ! "$RESOLVED" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::github.job_workflow_sha is '${RESOLVED}', not a 40-character commit."                  "The checker's commit cannot be derived, and an empty ref would check out the"                  "default branch and make this gate mutable. Refusing to run."
+            echo "::error::neither github.job_workflow_sha nor github.sha gave a 40-character commit (got '${RESOLVED}')."                  "The checker's commit cannot be derived, and an empty ref would check out the"                  "default branch and make this gate mutable. Refusing to run."
             exit 1
           fi
 
