@@ -151,6 +151,14 @@ jobs:
       - name: Commit-message gate self-test
         run: node tests/test-commit-message-check.js
 
+      # The resolve step in workflow-hardening.yml, extracted and executed. It
+      # is the only thing between a pinned gate and a mutable one: an empty
+      # `ref:` does not fail a checkout, it silently resolves the default
+      # branch, so the failure it guards against looks like a green run against
+      # the wrong tree.
+      - name: Hardening script-ref derivation self-test
+        run: node tests/test-hardening-script-ref.js
+
       # The osv-scan action's own body, executed against a stubbed `docker` that
       # returns each exit code the real scanner produces. The property is that
       # 0, 1 and 127 stay three different answers: `continue-on-error` collapses

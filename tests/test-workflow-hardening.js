@@ -421,9 +421,14 @@ ${refLine}
     addCaller(CALLER(V13, `      script-ref: ${V161}`)),
     ['script-ref', '8b7215be', '9276df8e'],
   )
-  expectRejection(
-    'script-ref-absent',
-    addCaller(`---
+  // ABSENT IS NOW CORRECT, and this case flipped deliberately. `script-ref`
+  // used to be required and had to equal the `uses:` pin beside it -- a
+  // property no bot can maintain, because Dependabot updates a SHA in a `uses:`
+  // reference and cannot see the same SHA passed as an input value. The
+  // workflow now derives it from `github.job_workflow_sha`, the commit it was
+  // itself resolved at, so there is no second pin to skew and nothing for a
+  // caller to keep in step.
+  expectPass('script-ref-absent-is-now-correct', addCaller(`---
 name: Hardening
 "on":
   push:
@@ -432,9 +437,7 @@ name: Hardening
 jobs:
   workflow-hardening:
     uses: 4cloudguru/shared-workflows/.github/workflows/workflow-hardening.yml@${V13} # v1.13.0
-`),
-    ['passes no `script-ref`'],
-  )
+`))
 } finally {
   fs.rmSync(workRoot, { recursive: true, force: true })
 }

@@ -269,9 +269,27 @@ for (const file of workflowFiles) {
 
   // ── 3 & 4. PER-JOB TIMEOUT AND EGRESS POLICY ──────────────────────────────
   // ── 5. SCRIPT-REF COUPLING ────────────────────────────────────────────────
-  // Driven by the `uses:` rather than by the presence of a script-ref: a file
-  // that calls the hardening workflow and passes NO script-ref must fail too,
-  // and keying off script-ref would never look at it.
+  // ABSENT IS CORRECT NOW. `script-ref` was a required input naming the same
+  // commit as the `uses:` pin beside it, and this rule rejected a caller whose
+  // two pins disagreed. The rule was right and kept firing, because it guards a
+  // property NO BOT CAN MAINTAIN: Dependabot understands a SHA in a `uses:`
+  // reference and updates it, while the identical SHA passed as an INPUT VALUE
+  // is invisible to it. Every bump landed half-applied and red until a human
+  // moved the second line, once per repository, forever.
+  //
+  // The workflow now derives the commit from `github.job_workflow_sha` -- the
+  // commit it was itself resolved at -- so there is no second pin to skew.
+  // A caller passing nothing is therefore correct, and preferred.
+  //
+  // A caller still passing it is held to it rather than ignored: a value that
+  // disagrees with the `uses:` pin means the tree says one thing and the gate
+  // would do another, and that stays a finding until the input is dropped. The
+  // workflow refuses the same mismatch at run time, so this is the earlier of
+  // two answers to the same question, not the only one.
+  //
+  // Still driven by the `uses:` rather than by the presence of a script-ref:
+  // keying off script-ref would stop looking at callers once they drop it,
+  // which is precisely when this rule still has something to say about the pin.
   lines.forEach((line, index) => {
     if (isComment(line)) return
     const call = /uses:\s*4cloudguru\/shared-workflows\/\.github\/workflows\/workflow-hardening\.yml@([0-9a-f]{40})/.exec(line)
@@ -284,11 +302,8 @@ for (const file of workflowFiles) {
       .map(({ l, i }) => ({ value: /^\s*script-ref:\s*(\S+)/.exec(l)[1].replace(/^["']|["']$/g, ''), at: i + 1 }))
 
     if (refs.length === 0) {
-      fail(
-        'script-ref',
-        `${rel}:${index + 1}`,
-        'calls workflow-hardening.yml but passes no `script-ref` — it is a required input, and the checker would be taken from an unstated commit'
-      )
+      // Derived from the resolved commit by the workflow itself. Nothing to
+      // check, and nothing that can drift.
       return
     }
     for (const ref of refs) {
@@ -296,7 +311,7 @@ for (const file of workflowFiles) {
         fail(
           'script-ref',
           `${rel}:${ref.at}`,
-          `\`script-ref\` is ${ref.value.slice(0, 8)} but the \`uses:\` pin beside it is ${pinned.slice(0, 8)} — the checker would come from a different commit than the workflow, so this gate would enforce something other than what the diff says. Dependabot rewrites the \`uses:\` line and not this one.`
+          `\`script-ref\` is ${ref.value.slice(0, 8)} but the \`uses:\` pin beside it is ${pinned.slice(0, 8)} — the checker would come from a different commit than the workflow, so this gate would enforce something other than what the diff says. Dependabot rewrites the \`uses:\` line and not this one, which is why the input is now optional: DROP it and the workflow derives the commit it was resolved at.`
         )
       }
     }
