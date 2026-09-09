@@ -182,3 +182,48 @@ jobs:
       # test is, so a mutation of the real script cannot pass silently.
       - name: Verify-vsix-signature action self-test
         run: node tests/test-verify-vsix-signature.js
+
+      # The documentation-overclaim gate. Until now it lived in FOUR places: a
+      # `scripts/check-docs-claims.js` in each of azure-pipelines-terraform,
+      # azure-pipelines-packer and azure-pipelines-release-docs, plus the
+      # CANONICAL copy signature replay runs against all three from
+      # security-orchestration's `remediation/gates/`. A census on 2026-09-09
+      # found five of the estate's seven gate copies drifted, and twice that day
+      # a fix landed in a hand-copy and never reached canonical -- which is the
+      # worse direction, because the copy the REPLAY runs is the one that
+      # decides whether a defect class is still open. The script here is
+      # BYTE-IDENTICAL to canonical on purpose: replay's gatelib compares them.
+      #
+      # The cases drive the REAL script at
+      # .github/actions/check-docs-claims/check-docs-claims.js, and two of them
+      # are mutations rather than shapes -- a documented workflow renamed away,
+      # and a file table naming a source file that is not there -- because a
+      # guard nobody has watched fail is not a guard. The action's own `run:`
+      # body is EXTRACTED from action.yml and executed too, the way the osv-scan
+      # suite extracts its step: a wrapper that swallowed the gate's exit code
+      # would leave every case above green while the consumer's check never went
+      # red at all. It shells out to `git` (the git-ignore exemption is
+      # `git check-ignore`, not a reimplementation that would drift from it),
+      # which is on ubuntu-latest. No dependencies.
+      - name: Docs-claims gate self-test
+        run: node tests/test-check-docs-claims.js
+
+      # The shared-module version-drift gate, moved here from the same four
+      # places for the same reason -- and moved while its four copies were still
+      # in lockstep, which is what makes this the cheap moment rather than the
+      # expensive one. It refuses an extension whose sibling tasks resolve
+      # DIFFERENT versions of @4cloudguru/pipeline-task-core or
+      # pipeline-task-ado: one commit of azure-pipelines-terraform carried three
+      # resolved versions of the former with every existing check green
+      # (sethbacon/azure-pipelines-terraform#1108).
+      #
+      # Each of the three drift shapes is broken in turn and watched go red, and
+      # the empty-universe cases are not filler: this gate meets a repository
+      # with no Tasks/ tree in real life, and exit 0 over nothing must stay
+      # distinguishable from exit 0 over everything. The action's `run:` body is
+      # extracted and executed here too, for the same reason as above -- and one
+      # case points the gate at THIS repository, because the script falls back to
+      # its own parent directory when the root fails to arrive, which inside a
+      # composite action would walk `.github/actions` and report clean forever.
+      - name: Shared-module pin gate self-test
+        run: node tests/test-check-shared-module-pins.js
