@@ -74,19 +74,59 @@ asking people to remember.
 
 ## Composite actions here
 
-Two guards live in `.github/actions/` rather than `.github/workflows/`, and the
-reason is the same for both: **a reusable workflow reports as
-`<caller-job-id> / <called-job-name>`, which renames the check.** Both are
-required status contexts somewhere in the estate, and a required context that
-gets renamed silently stops being required — a failure mode where a gate stops
-existing and nothing notices. A composite action is called as a **step** inside
-the caller's existing job, so the job keeps its name and no branch protection
-moves.
+The guards below live in `.github/actions/` rather than `.github/workflows/`,
+and the reason is the same for all of them: **a reusable workflow reports as
+`<caller-job-id> / <called-job-name>`, which renames the check.** Each one runs
+inside a job whose context is already required somewhere in the estate, or is
+headed for one, and a required context that gets renamed silently stops being
+required — a failure mode where a gate stops existing and nothing notices. A
+composite action is called as a **step** inside the caller's existing job, so the
+job keeps its name and no branch protection moves. The `required in` column says
+where each is binding today; "not yet" means the consumers have not adopted it
+here, not that it is advisory.
 
 | action | what it refuses | required in |
 | --- | --- | --- |
 | [`breaking-change-footers`](.github/actions/breaking-change-footers/) | a squash that would drop a second breaking-change declaration, or prose release-please reads as one nobody wrote | `azure-pipelines-release-docs` |
 | [`release-pr-closing-keywords`](.github/actions/release-pr-closing-keywords/) | a release pull request that would close an issue the release does not complete | `terraform-state-manager-backend` |
+| [`check-docs-claims`](.github/actions/check-docs-claims/) | a document asserting a control, a file table, a referenced path or a required-check provenance the repository does not carry | not yet — the three ADO extensions still run their own `scripts/` copy |
+| [`check-shared-module-pins`](.github/actions/check-shared-module-pins/) | sibling tasks resolving different versions of one shared `@4cloudguru` package, so a released fix reaches some tasks and not others | not yet — the three ADO extensions still run their own `scripts/` copy |
+
+### The two gate actions ported from the extensions
+
+`check-docs-claims` and `check-shared-module-pins` arrive here from **four**
+places each: a `scripts/` hand-copy in `azure-pipelines-terraform`,
+`azure-pipelines-packer` and `azure-pipelines-release-docs`, plus the
+**canonical** copy that signature replay runs against all three from
+`security-orchestration`'s `remediation/gates/`.
+
+A census on 2026-09-09 found **five of seven** copies of those two scripts
+already drifted, and twice that day a fix landed in a hand-copy and never
+reached canonical. That direction is the expensive one: the copy the *replay*
+runs is the copy that decides whether a defect class is still open, so a
+hand-copy that is ahead of canonical makes the replay green about a repository
+nobody fixed. `check-docs-claims` is drifted right now —
+`azure-pipelines-release-docs` carries an older comment block around the
+`osv-scanner` → `osv-scan` detection stem. `check-shared-module-pins` is still
+in lockstep across all four, which is exactly what makes this the cheap moment
+to move it rather than the expensive one.
+
+**The scripts here are byte-identical to the canonical copies, deliberately.**
+Replay's `gatelib` resolves a canonical gate from
+`suite/shared-workflows/.github/actions/<gate>/<gate>.js` when it is present and
+compares every repository's own copy against it by sha256, so a re-worded
+comment is a difference to that comparison exactly as a re-worded condition is —
+including the `PROVENANCE. Ported from …` header, which describes the *previous*
+move rather than this one, and the `Usage: node scripts/…` line naming a path
+that is the consumers' and not this repository's. To change the prose, change
+the canonical copy first and re-copy. `signature-replay.yml` gained a checkout of
+this repository at `suite/shared-workflows` so that path resolves at all.
+
+Both take the repository root and nothing else, so both actions expose one
+optional `root` (default `.`) and one optional `json` flag, passed through `env`
+rather than `${{ }}` — a template substitution happens before bash parses the
+line, and a gate step is the last place to model the injection class it exists
+to refuse. Neither has a dependency; both are Node builtins only.
 
 ### The release-PR closing-keyword guard
 

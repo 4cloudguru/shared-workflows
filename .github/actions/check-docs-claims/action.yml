@@ -1,0 +1,117 @@
+---
+name: Documents do not claim controls the repository lacks
+description: >-
+  Fail a repository whose SECURITY.md, README or CONTRIBUTING asserts a
+  supply-chain control, a file table, a referenced path, a bundled-package
+  attribution or a required-check provenance that the tree does not actually
+  carry.
+
+# WHY THIS IS A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW.
+#
+# Same reasoning recorded on `commit-message-check`, `breaking-change-footers`
+# and `publish-marketplace`: a reusable workflow reports as
+# `<caller-job-id> / <called-job-name>`, which RENAMES the check. This gate runs
+# today inside each extension's existing `pr-checks` job, whose context is
+# required on `main` in all three consumers, and a required context that never
+# appears is indistinguishable from one still running. A composite action is a
+# STEP inside the caller's own job, so the job keeps its name and no branch
+# protection moves.
+#
+# WHAT THIS REPLACES. `scripts/check-docs-claims.js` hand-copied into
+# azure-pipelines-terraform, azure-pipelines-packer and
+# azure-pipelines-release-docs, plus the CANONICAL copy that signature replay
+# runs against all three from security-orchestration's `remediation/gates/`.
+# FOUR copies of one 844-line script. A census on 2026-09-09 found five of the
+# estate's seven gate copies already drifted, and twice that day a fix landed in
+# a hand-copy and never reached canonical — which is worse than ordinary drift,
+# because the copy the REPLAY runs is the one that decides whether a class is
+# still open. release-docs' copy is behind this one right now, by the widening
+# of the `osv-scanner` -> `osv-scan` detection stem.
+#
+# THE SCRIPT HERE IS BYTE-IDENTICAL TO THE CANONICAL COPY, DELIBERATELY.
+# `check-docs-claims.js` below is `remediation/gates/check-docs-claims.js` at
+# security-orchestration@origin/main, copied with `cp` and verified with `cmp` —
+# comment text included, its "PROVENANCE. Ported from ..." header included, even
+# though that header now describes the previous move rather than this one.
+# Replay's gatelib resolves a canonical gate from
+# `suite/shared-workflows/.github/actions/<gate>/<gate>.js` when it is present
+# and COMPARES it against the mirror it finds; a re-worded comment is a
+# difference to that comparison exactly as a re-worded condition is. Editing
+# this file to make its prose accurate is how the identity gets broken. Move
+# the wording in the canonical copy first, then re-copy.
+#
+# WHAT IT CHECKS. Six surfaces, all of them claims a document makes about the
+# repository it sits in — the supply-chain control ledger against what the
+# workflows actually do (bidirectionally: `planned` over a control that landed
+# is a finding too), file tables against the directories they anchor to,
+# backticked repo-relative paths against the filesystem, claim-corroborating
+# devDependencies against something that actually invokes them, THIRD_PARTY_NOTICES
+# against each task's package.json, and a required-checks table against
+# workflows that can genuinely post those contexts. Its own header is the
+# authority on each; read it there rather than trusting this summary.
+#
+# IT IS SAFE ON A REPOSITORY WITH NO Tasks/ TREE. The task-shaped surfaces go
+# inert and SAY SO — the script prints what it enumerated, because a gate that
+# silently saw nothing looks exactly like a gate that looked and approved.
+
+inputs:
+  root:
+    description: >-
+      Repository root to check, relative to the calling job's working directory.
+      Defaults to `.`, which is the checkout GitHub already put there. Passed to
+      the script as its positional argument, which is how the gate has always
+      taken a root.
+    required: false
+    default: "."
+  json:
+    description: >-
+      Emit the machine-readable report (`--json`) instead of the human one.
+      `true` to enable; anything else is off. The exit code is the same either
+      way — 0 every checked claim holds, 1 drift — so this changes what the log
+      carries and never what the step decides.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Documents claim only what this repository implements
+      shell: bash
+      # EVERY INPUT ARRIVES THROUGH env, none through ${{ }} inside the script.
+      # A `${{ inputs.root }}` spliced into a `run:` body is an expression
+      # substituted before bash sees the line, so a caller-supplied value
+      # carrying a quote or a semicolon becomes shell rather than an argument.
+      # That is zizmor's template-injection audit, which is a required check on
+      # this repository — and a gate step is the last place to model the class
+      # it exists to refuse. Same shape as `osv-scan` and `publish-marketplace`.
+      env:
+        ROOT: ${{ inputs.root }}
+        JSON: ${{ inputs.json }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+
+        # `github.action_path` is the whole mechanism that pins the
+        # implementation to the SHA on the caller's `uses:` line. A failure
+        # here should say that, rather than surfacing as a node stack trace.
+        [ -f "$ACTION_PATH/check-docs-claims.js" ] || {
+          echo "::error::check-docs-claims.js is missing from the action at '$ACTION_PATH'." >&2
+          exit 1
+        }
+
+        # Built as an array rather than an unquoted string, so a root with a
+        # space in it stays one argument. The script takes the root positionally
+        # and treats `--json` as a flag it filters out of argv, so order does not
+        # matter, but this is the order the gate documents.
+        args=("$ROOT")
+        case "$JSON" in
+          true | TRUE | True | 1 | yes) args+=(--json) ;;
+        esac
+
+        # NO `|| true`, NO pipe, NO `set +e`. The gate's exit code IS the step's
+        # verdict, and the estate's own lesson is that a could-not-run swallowed
+        # into a pass is the worst of the answers available. Anything that
+        # captured this status would have to re-raise it, so nothing captures
+        # it. A pipe would be worse than a capture: a filter on the end of a
+        # command REPLACES its exit code.
+        node "$ACTION_PATH/check-docs-claims.js" "${args[@]}"

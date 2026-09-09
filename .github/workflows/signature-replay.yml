@@ -478,6 +478,59 @@ jobs:
             path: suite/terraform-drift-contract,
           }
 
+      # THIS REPOSITORY, and it is not here to be scanned. It is here to supply
+      # CANONICAL GATE SCRIPTS.
+      #
+      # Six ado-extension signatures do not analyse code themselves: they shell
+      # out to a gate script and read its JSON, so the replay and the
+      # repository's own CI cannot answer differently about the same code. That
+      # only holds if the gate they run is ONE copy. `remediation/signatures/
+      # gatelib.py` is what makes it one — it resolves the canonical gate, runs
+      # that, and reports every repo whose own `scripts/<gate>.js` is missing or
+      # DIFFERS by sha256 rather than silently running each repo's own.
+      #
+      # gatelib resolves canonical gates from
+      # `suite/shared-workflows/.github/actions/<gate>/<gate>.js` when that file
+      # is present, and this checkout is what makes it present: without it the
+      # path does not exist inside `--repos-root suite` and there is nothing to
+      # prefer. (Today gatelib's other resolution is
+      # security-orchestration's `remediation/gates/`, and the two files are
+      # byte-identical on purpose — `cp` then `cmp`, comment text included — so
+      # the move is a no-op to every signature on the day it lands and a
+      # single-source thereafter.)
+      #
+      # Two gates live there so far, `check-docs-claims` and
+      # `check-shared-module-pins`. A census on 2026-09-09 found five of the
+      # estate's seven copies of those scripts drifted, and twice that day a fix
+      # landed in a hand-copy and never reached canonical — so "which copy is
+      # right" is a live question, and the answer has to be fetched rather than
+      # assumed.
+      #
+      # Same terms as every checkout above: PUBLIC, so no `token:` — checkout
+      # falls back to the job's own GITHUB_TOKEN, which reads public repositories
+      # in either owner — and `persist-credentials: false`, because this job
+      # uploads an artifact and a credential left in a clone's .git/config is
+      # zizmor's `artipacked`. `ref: main` is explicit rather than defaulted: the
+      # default is the checked-out repo's OWN default branch, which is the same
+      # thing today and stops being so the moment anyone renames it here, and a
+      # canonical copy resolved from an unstated branch is not canonical.
+      #
+      # NOT in scope.json, and deliberately not added there: `--repos-root suite`
+      # resolves scope entries against these directories, an entry is a promise
+      # that every applicable signature runs against that repo, and a scope
+      # change is a distributed migration across fifteen host checkouts that has
+      # to land in a fixed order. An EXTRA directory under `suite/` is invisible
+      # to the scope walk; a missing one is exit 2 for the whole job. This is the
+      # safe direction of that asymmetry.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          {
+            persist-credentials: false,
+            repository: 4cloudguru/shared-workflows,
+            ref: main,
+            path: suite/shared-workflows,
+          }
+
       # Overwrite this repo's sibling copy with the commit under test, so the
       # replay reads the PR's code and not origin/main's. Guarded because
       # `github.event.repository` is absent on schedule events — the path would

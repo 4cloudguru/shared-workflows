@@ -1,0 +1,114 @@
+---
+name: Sibling tasks resolve one version of each shared package
+description: >-
+  Fail an extension whose Tasks/ resolve different versions of
+  @4cloudguru/pipeline-task-core or @4cloudguru/pipeline-task-ado, so a fix
+  released in a shared security package reaches some tasks and not others.
+
+# WHY THIS IS A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW.
+#
+# Same reasoning recorded on `commit-message-check`, `breaking-change-footers`
+# and `publish-marketplace`: a reusable workflow reports as
+# `<caller-job-id> / <called-job-name>`, which RENAMES the check. This gate runs
+# inside each extension's existing per-PR job, and that job's context is
+# required on `main`. A composite action is a STEP inside the caller's own job,
+# so the job keeps its name and no branch protection moves.
+#
+# WHAT IT REFUSES, and why a per-feature minimum did not catch it. The estate
+# already enforced byte-identical shared SOURCE modules and a MINIMUM version
+# per feature, and neither held the shared DEPENDENCIES in lockstep: on
+# 2026-09-05 one commit of azure-pipelines-terraform carried three resolved
+# versions of @4cloudguru/pipeline-task-core (0.7.1, 0.7.2, 0.8.0) and two of
+# @4cloudguru/pipeline-task-ado across its tasks, with every existing check
+# green (sethbacon/azure-pipelines-terraform#1108). Per (package x task) it
+# asserts one declared range and one resolved version across every sibling, and
+# exactly ONE copy of the package in each task's lock — a nested second copy is
+# how a range mismatch between two shared packages manifests, and the delegated
+# code then runs whichever copy is nested.
+#
+# WHAT THIS REPLACES. `scripts/check-shared-module-pins.js` hand-copied into
+# azure-pipelines-terraform, azure-pipelines-packer and
+# azure-pipelines-release-docs, plus the CANONICAL copy signature replay runs
+# against all three from security-orchestration's `remediation/gates/`. Four
+# copies of one script. They are still in lockstep today, which is exactly what
+# makes this the safe moment to move it: its sibling `check-docs-claims` was
+# lifted on the same day already three-way drifted.
+#
+# THE SCRIPT HERE IS BYTE-IDENTICAL TO THE CANONICAL COPY, DELIBERATELY.
+# `check-shared-module-pins.js` below is
+# `remediation/gates/check-shared-module-pins.js` at
+# security-orchestration@origin/main, copied with `cp` and verified with `cmp` —
+# comment text included, and its `Usage: node scripts/check-shared-module-pins.js`
+# line included even though the path it names is the consumers' and not this
+# one. Replay's gatelib resolves a canonical gate from
+# `suite/shared-workflows/.github/actions/<gate>/<gate>.js` when it is present
+# and COMPARES it against the mirror it finds; a re-worded comment is a
+# difference to that comparison exactly as a re-worded condition is. Move the
+# wording in the canonical copy first, then re-copy.
+#
+# IT IS SAFE ON A REPOSITORY WITH NO Tasks/ TREE, and says so rather than
+# passing quietly: the script prints how many task manifests it read alongside
+# how many pins it enumerated, so an empty universe is distinguishable from a
+# walk that looked nowhere. Exit 0 over nothing is not a pass.
+
+inputs:
+  root:
+    description: >-
+      Repository root to check, relative to the calling job's working directory.
+      Defaults to `.`, which is the checkout GitHub already put there. Passed to
+      the script as its positional argument, which is how the gate has always
+      taken a root.
+    required: false
+    default: "."
+  json:
+    description: >-
+      Emit the machine-readable report (`--json`) instead of the human table.
+      `true` to enable; anything else is off. The exit code is the same either
+      way — 0 lockstep, 1 drift, 2 could not run — so this changes what the log
+      carries and never what the step decides.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Every task resolves the same version of each shared package
+      shell: bash
+      # EVERY INPUT ARRIVES THROUGH env, none through ${{ }} inside the script.
+      # A `${{ inputs.root }}` spliced into a `run:` body is an expression
+      # substituted before bash sees the line, so a caller-supplied value
+      # carrying a quote or a semicolon becomes shell rather than an argument.
+      # That is zizmor's template-injection audit, which is a required check on
+      # this repository — and a gate step is the last place to model the class
+      # it exists to refuse. Same shape as `osv-scan` and `publish-marketplace`.
+      env:
+        ROOT: ${{ inputs.root }}
+        JSON: ${{ inputs.json }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+
+        # `github.action_path` is the whole mechanism that pins the
+        # implementation to the SHA on the caller's `uses:` line. A failure
+        # here should say that, rather than surfacing as a node stack trace.
+        [ -f "$ACTION_PATH/check-shared-module-pins.js" ] || {
+          echo "::error::check-shared-module-pins.js is missing from the action at '$ACTION_PATH'." >&2
+          exit 1
+        }
+
+        # Built as an array rather than an unquoted string, so a root with a
+        # space in it stays one argument. The script takes the root positionally
+        # and treats `--json` as a flag it filters out of argv, so order does not
+        # matter, but this is the order the gate documents.
+        args=("$ROOT")
+        case "$JSON" in
+          true | TRUE | True | 1 | yes) args+=(--json) ;;
+        esac
+
+        # NO `|| true`, NO pipe, NO `set +e`. The gate's exit code IS the step's
+        # verdict — 1 is drift and 2 is could-not-run, and the estate's own
+        # lesson is that a could-not-run swallowed into a pass is the worst
+        # answer of the three. Anything that captured this status would have to
+        # re-raise it, so nothing captures it. A pipe would be worse than a
+        # capture: a filter on the end of a command REPLACES its exit code.
+        node "$ACTION_PATH/check-shared-module-pins.js" "${args[@]}"
