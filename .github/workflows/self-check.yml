@@ -313,17 +313,51 @@ jobs:
       # order the two repositories move in (canonical first, then re-copy): a
       # pull request here that edits a composite script whose bytes are not
       # already canonical is refused. The fleet's signature-replay job runs the
-      # same script advisory. The pairs come from gatelib in a clone of
+      # same script advisory. The pairs come from gatelib in a checkout of
       # canonical main, so a gate registered there is covered here on the same
       # commit; a gate registered ahead of its action is skipped and said so.
       #
-      # An anonymous clone rather than actions/checkout: that action refuses an
-      # empty token, and this job has none to give it (permissions: contents
-      # read, on THIS repository only). Public repository, depth 1, main.
+      # CANONICAL IS PRIVATE, so reading it takes the same App the replay uses:
+      # `SUITE_READ_APP_ID` (a variable) and `SUITE_READ_APP_KEY` (a secret) on
+      # THIS repository, minting a token for the installation on sethbacon.
+      # `owner:` is load-bearing -- the default mints for this org and finds no
+      # installation -- and `repositories:` plus `permission-contents: read`
+      # narrow the token to the one thing it is spent on, which is zizmor's
+      # `github-app-token` audit. The action revokes the token in its post step.
+      #
+      # UNTIL THOSE TWO ARE CONFIGURED HERE, THIS CHECK CANNOT RUN, AND SAYS SO
+      # as a warning rather than pretending: the mint step is skipped when the
+      # variable is absent, and the check below exits 0 with an annotation that
+      # names the missing configuration. That is the only skip in this job and it
+      # is loud on purpose. Configure the two and it becomes blocking with no
+      # further edit.
+      - name: Mint a read token for canonical (security-orchestration is private)
+        if: ${{ vars.SUITE_READ_APP_ID != '' }}
+        id: suite-read
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: "${{ vars.SUITE_READ_APP_ID }}"
+          private-key: "${{ secrets.SUITE_READ_APP_KEY }}"
+          owner: sethbacon
+          repositories: security-orchestration
+          permission-contents: read
+
+      # An anonymous clone was tried first and refused (the repository is
+      # private), so the token travels as an extra header on this one command
+      # rather than in the remote URL, where git would persist it in the clone's
+      # config. Depth 1, main, into the runner's temp directory so nothing here
+      # walks into it.
       - name: Composites are byte-identical to canonical (blocking)
+        env:
+          SUITE_READ_TOKEN: ${{ steps.suite-read.outputs.token }}
         run: |
           set -euo pipefail
-          git clone --quiet --depth 1 --branch main https://github.com/sethbacon/security-orchestration.git "$RUNNER_TEMP/security-orchestration"
+          if [ -z "${SUITE_READ_TOKEN:-}" ]; then
+            echo "::warning title=byte-identity check did not run::SUITE_READ_APP_ID (variable) and SUITE_READ_APP_KEY (secret) are not configured on 4cloudguru/shared-workflows, so canonical (sethbacon/security-orchestration, private) cannot be read here. The composite-vs-canonical byte-identity check is therefore NOT enforced on this pull request; the fleet's signature-replay job still reports drift, advisory. Configure the two to make this step blocking."
+            exit 0
+          fi
+          auth="$(printf 'x-access-token:%s' "$SUITE_READ_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" clone --quiet --depth 1 --branch main https://github.com/sethbacon/security-orchestration.git "$RUNNER_TEMP/security-orchestration"
           python3 tests/gate-identity.py --actions .github/actions --gates "$RUNNER_TEMP/security-orchestration/remediation/gates" --signatures "$RUNNER_TEMP/security-orchestration/remediation/signatures"
 
       # The check above is itself a guard, so it is watched failing: identical
