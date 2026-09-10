@@ -320,7 +320,7 @@ jobs:
       # An anonymous clone rather than actions/checkout: that action refuses an
       # empty token, and this job has none to give it (permissions: contents
       # read, on THIS repository only). Public repository, depth 1, main.
-      - name: Byte identity: composites equal canonical (blocking)
+      - name: Composites are byte-identical to canonical (blocking)
         run: |
           set -euo pipefail
           git clone --quiet --depth 1 --branch main https://github.com/sethbacon/security-orchestration.git "$RUNNER_TEMP/security-orchestration"
