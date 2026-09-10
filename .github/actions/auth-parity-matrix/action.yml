@@ -103,8 +103,9 @@ inputs:
   root:
     description: >-
       Repository root to check. Defaults to `.`. A caller in a job that sets
-      `defaults.run.working-directory` must pass `${{ github.workspace }}`
-      explicitly — a composite action's steps do not inherit that default.
+      `defaults.run.working-directory` must pass the workspace path explicitly
+      (the `github.workspace` context, written as an expression in the caller's
+      `with:`); a composite action's steps do not inherit that default.
     required: false
     default: "."
   min-scanned:
