@@ -1,7 +1,15 @@
 ---
-# actionlint and zizmor are pinned in workflow-security.yml, and neither is a
+# actionlint and zizmor are pinned in workflow-security.yml, and the osv-scanner
+# image is pinned in .github/actions/osv-scan/action.yml. None of the three is a
 # dependency any package manager tracks -- so nothing proposes an upgrade and a
 # pin only moves if somebody remembers.
+#
+# The osv-scanner pin is here because it went unwatched for months
+# (sethbacon/terraform-registry-backend#894): it lived in eight consumers'
+# weekly-security.yml, one of them fell two releases behind, and the only thing
+# that found out was a manual sweep. Dependabot cannot see it either way -- the
+# github-actions ecosystem reads `uses:` clauses, and this reference is a
+# `docker run` argument inside a composite action's shell.
 #
 # azure-pipelines-terraform used to watch this with a weekly canary that grepped
 # its OWN unit-test.yml. Migrating that repo onto the shared workflow removed the
@@ -26,15 +34,16 @@ permissions:
 
 jobs:
   tooling-version-drift:
-    name: Tooling version drift (actionlint, zizmor)
+    name: Tooling version drift (actionlint, zizmor, osv-scanner)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
     steps:
       # hardening-exception: egress-audit — this job queries the GitHub releases
-      #   API and PyPI for the latest published versions, and clones this
-      #   repository; harden-runner has never run in this repository, so no
+      #   API and PyPI for the latest published versions, resolves a tag to a
+      #   digest against ghcr.io, and clones this repository; harden-runner has
+      #   never run in this repository, so no
       #   endpoint baseline exists and a block policy written without one fails
       #   closed on its first run; audit is what produces that list
       - name: Harden the runner

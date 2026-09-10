@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// Tooling pin drift: actionlint and zizmor.
+// Tooling pin drift: actionlint, zizmor, and the osv-scanner image.
 //
 // Neither is a dependency any package manager tracks, so nothing proposes an
 // upgrade and a pin only moves if somebody remembers. azure-pipelines-terraform
@@ -24,6 +24,7 @@ const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..');
 const SECURITY = '.github/workflows/workflow-security.yml';
 const RECORD = '.github/workflows/workflow-security-record.yml';
+const OSV_ACTION = '.github/actions/osv-scan/action.yml';
 
 /** Every zizmor `version:` pin, with the file it came from. */
 function zizmorPins(root) {
@@ -90,6 +91,44 @@ function zizmorActionPins(root) {
         while ((m = re.exec(text)) !== null) out.push({ file: rel, sha: m[1], tag: m[2] || null });
     }
     return out;
+}
+
+/**
+ * The osv-scanner image the shared scan action runs, split into its parts.
+ *
+ * WHY THIS IS HERE (terraform-registry-backend#894). This pin used to live in
+ * eight consumers' weekly-security.yml, and one of them sat two releases behind
+ * for months with nothing reporting it -- because this reader covered actionlint
+ * and zizmor and nothing else. The osv-scan action consolidated the eight copies
+ * into the one below, which makes the pin watchable for the first time; leaving
+ * it unwatched would reproduce the original defect in a single place instead of
+ * eight.
+ *
+ * Anchored on the `image:` INPUT KEY at its own indentation, not on the image
+ * name. The same `ghcr.io/google/osv-scanner-action:v2.5.1` string appears in
+ * that file's header prose without a digest, so a pattern matching the name
+ * would resolve the COMMENT and report it as the pin -- a reader that finds
+ * something and is wrong about what, which reads exactly like a clean one.
+ */
+function osvScannerPin(root) {
+    const empty = { file: OSV_ACTION, ref: null, registry: null, repo: null, tag: null, digest: null };
+    const file = path.join(root, OSV_ACTION);
+    if (!fs.existsSync(file)) return empty;
+    const lines = fs.readFileSync(file, 'utf8').split('\n');
+    const start = lines.findIndex((l) => /^ {2}image:\s*$/.test(l));
+    if (start === -1) return empty;
+    let ref = null;
+    for (let i = start + 1; i < lines.length; i++) {
+        // Stop at the next input, or at any top-level key. Scanning past them
+        // would let a LATER input's default answer for this one.
+        if (/^ {0,2}\S/.test(lines[i])) break;
+        const m = /^ {4}default:\s*["']([^"']+)["']\s*$/.exec(lines[i]);
+        if (m) { ref = m[1]; break; }
+    }
+    if (!ref) return empty;
+    const parsed = /^([a-z0-9.-]+)\/(\S+?):([^@\s]+)(?:@(sha256:[0-9a-f]{64}))?$/.exec(ref);
+    if (!parsed) return { ...empty, ref };
+    return { file: OSV_ACTION, ref, registry: parsed[1], repo: parsed[2], tag: parsed[3], digest: parsed[4] || null };
 }
 
 function problems(root, latest) {
@@ -169,6 +208,40 @@ function problems(root, latest) {
                 'Bump the version, the tarball URL and the SHA256 together.');
         }
     }
+
+    // ── the osv-scanner image the shared scan action runs
+    const osv = osvScannerPin(root);
+    if (!osv.ref) {
+        found.push(`no osv-scanner image pin found in ${OSV_ACTION}. The action has moved, been renamed, ` +
+            'or stopped declaring its image as an input default; this check cannot be read as clean ' +
+            'when it resolved nothing.');
+    } else if (!osv.repo) {
+        found.push(`the osv-scanner image pin in ${OSV_ACTION} is \`${osv.ref}\`, which is not a ` +
+            'registry/repository:tag reference this check can resolve.');
+    } else if (!osv.digest) {
+        found.push(`the osv-scanner image is pinned to \`${osv.ref}\` with no digest, so the tag alone ` +
+            'decides what runs. A tag is mutable; the digest is what makes the scan reproducible.');
+    } else {
+        // Does the digest still name the release the tag names? This is the
+        // half-landed bump -- tag comment moved, digest did not, or the reverse
+        // -- and it is invisible to every other check here, because BOTH halves
+        // look correct on their own. Same failure the actionlint URL/checksum
+        // pair has, where the download succeeds and the checksum rejects it.
+        if (latest.osvTagDigest === '') {
+            found.push(`resolved an EMPTY digest for ${osv.repo}:${osv.tag}. That is a failed read, not ` +
+                'agreement, and it must not be mistaken for a pin that matches.');
+        } else if (latest.osvTagDigest && latest.osvTagDigest !== osv.digest) {
+            found.push(`the osv-scanner pin is internally inconsistent: it names ${osv.tag} but carries ` +
+                `${osv.digest.slice(0, 19)}…, while ${osv.tag} currently resolves to ` +
+                `${latest.osvTagDigest.slice(0, 19)}…. Either a bump landed only half way, or upstream ` +
+                're-pushed the tag. The digest is what runs, so the version comment is the half that lies.');
+        }
+        if (latest.osvTag && osv.tag.replace(/^v/, '') !== latest.osvTag.replace(/^v/, '')) {
+            found.push(`osv-scanner-action is pinned to ${osv.tag} but the latest release is ${latest.osvTag}. ` +
+                `Bump both the tag and the digest in ${OSV_ACTION}; nothing else in the estate pins this ` +
+                'image any more, so this is the only place it moves.');
+        }
+    }
     return found;
 }
 
@@ -222,7 +295,61 @@ async function fetchLatest(root) {
         zizmorActionTag = String((await rel.json()).tag_name || '') || null;
     }
 
-    return { actionlint, actionlintOwner: owner, actionlintPublishedAt, zizmor, zizmorActionSupports, zizmorActionTag };
+    // THE OSV-SCANNER IMAGE. Owner and repository come out of the pin itself,
+    // never compiled in here -- same reasoning as the actionlint owner above.
+    // For a ghcr.io-published action the registry path and the GitHub repository
+    // coincide; if that ever stops being true the releases call 404s and this
+    // function throws, which exits 2 (could not ask) rather than 0 (current).
+    const osv = osvScannerPin(root);
+    let osvTag = null;
+    let osvTagDigest = null;
+    if (osv.repo && osv.registry) {
+        const rel = await fetch(`https://api.github.com/repos/${osv.repo}/releases/latest`, {
+            headers: { accept: 'application/vnd.github+json', 'user-agent': 'shared-workflows-tooling-pins' },
+        });
+        if (!rel.ok) throw new Error(`osv-scanner-action releases API returned ${rel.status} for ${osv.repo}`);
+        osvTag = String((await rel.json()).tag_name || '') || null;
+
+        if (osv.tag) {
+            // Anonymous pull token, then a HEAD for the manifest the TAG points
+            // at today. The Accept list has to name the index media types as
+            // well as the manifest ones: a multi-arch image answers with an
+            // index, and a registry offered only the single-arch types returns
+            // 404 for a tag that plainly exists.
+            const tokenUrl = `https://${osv.registry}/token?scope=repository:${osv.repo}:pull` +
+                `&service=${osv.registry}`;
+            const tokenRes = await fetch(tokenUrl, { headers: { 'user-agent': 'shared-workflows-tooling-pins' } });
+            if (!tokenRes.ok) throw new Error(`${osv.registry} token endpoint returned ${tokenRes.status}`);
+            const token = String((await tokenRes.json()).token || '');
+            if (!token) throw new Error(`${osv.registry} returned no pull token for ${osv.repo}`);
+
+            const manifest = await fetch(`https://${osv.registry}/v2/${osv.repo}/manifests/${osv.tag}`, {
+                method: 'HEAD',
+                headers: {
+                    authorization: `Bearer ${token}`,
+                    'user-agent': 'shared-workflows-tooling-pins',
+                    accept: [
+                        'application/vnd.oci.image.index.v1+json',
+                        'application/vnd.docker.distribution.manifest.list.v2+json',
+                        'application/vnd.oci.image.manifest.v1+json',
+                        'application/vnd.docker.distribution.manifest.v2+json',
+                    ].join(','),
+                },
+            });
+            if (!manifest.ok) {
+                throw new Error(`${osv.registry} manifest HEAD returned ${manifest.status} for ${osv.repo}:${osv.tag}`);
+            }
+            // Empty string, not null, when the header is absent: `problems`
+            // distinguishes "asked and got nothing" from "did not ask", and
+            // collapsing them would let a failed read report as agreement.
+            osvTagDigest = manifest.headers.get('docker-content-digest') || '';
+        }
+    }
+
+    return {
+        actionlint, actionlintOwner: owner, actionlintPublishedAt, zizmor,
+        zizmorActionSupports, zizmorActionTag, osvTag, osvTagDigest,
+    };
 }
 
 async function main() {
@@ -250,6 +377,14 @@ async function main() {
         `${latest.zizmorActionSupports ? latest.zizmorActionSupports.length : '?'} scanner version(s)), ` +
         `actionlint ${alp.urlVersion ?? 'unresolved'} from ${alp.owner ?? 'unresolved'}/actionlint; ` +
         `upstream actionlint ${latest.actionlint ?? '?'}, zizmor ${latest.zizmor ?? '?'}`);
+    // The osv-scanner pin is REPORTED whether or not it is a finding, for the
+    // same reason the others are: a check that resolved nothing looks identical
+    // to a clean one in its exit code, and this line is where that shows.
+    const op = osvScannerPin(root);
+    console.log(`enumerated: osv-scanner image ${op.ref ? `${op.repo}:${op.tag}` : 'UNRESOLVED'} ` +
+        `${op.digest ? `at ${op.digest.slice(0, 19)}…` : '(no digest)'}; ` +
+        `upstream ${latest.osvTag ?? '?'}, that tag resolves to ` +
+        `${latest.osvTagDigest ? `${latest.osvTagDigest.slice(0, 19)}…` : '?'}`);
 
     // SAY HOW OLD THE UPSTREAM IS, because "matches its latest published
     // release" is true of a dead project and reads as currency. rhysd/actionlint
@@ -276,5 +411,5 @@ async function main() {
     return 1;
 }
 
-module.exports = { zizmorPins, zizmorActionPins, actionlintPin, problems };
+module.exports = { zizmorPins, zizmorActionPins, actionlintPin, osvScannerPin, problems };
 if (require.main === module) main().then((c) => process.exit(c));
