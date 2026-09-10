@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.25.0](https://github.com/4cloudguru/shared-workflows/compare/v1.24.0...v1.25.0) (2026-09-10)
+
+
+### Features
+
+* **tooling-pins:** watch the osv-scanner image pin ([#76](https://github.com/4cloudguru/shared-workflows/issues/76)) ([a2c3f03](https://github.com/4cloudguru/shared-workflows/commit/a2c3f03817a00ab1e91fea7c9dea19917542fcee))
+
 ## [1.24.0](https://github.com/4cloudguru/shared-workflows/compare/v1.23.0...v1.24.0) (2026-09-10)
 
 
