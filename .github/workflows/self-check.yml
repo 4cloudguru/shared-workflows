@@ -304,3 +304,32 @@ jobs:
       # taken over an all-guarded tree.
       - name: Auth-parity-matrix gate self-test
         run: node tests/test-auth-parity-matrix.js
+
+      # The delegated gates live in two places on purpose -- canonical in
+      # security-orchestration's remediation/gates/, and inside the composite
+      # actions here -- and every composite script is a `cp` of canonical,
+      # proven with `cmp` when it lands. That proof has to keep holding after it
+      # lands, and this is the one place it can turn red without deadlocking the
+      # order the two repositories move in (canonical first, then re-copy): a
+      # pull request here that edits a composite script whose bytes are not
+      # already canonical is refused. The fleet's signature-replay job runs the
+      # same script advisory. The pairs come from gatelib in a clone of
+      # canonical main, so a gate registered there is covered here on the same
+      # commit; a gate registered ahead of its action is skipped and said so.
+      #
+      # An anonymous clone rather than actions/checkout: that action refuses an
+      # empty token, and this job has none to give it (permissions: contents
+      # read, on THIS repository only). Public repository, depth 1, main.
+      - name: Byte identity: composites equal canonical (blocking)
+        run: |
+          set -euo pipefail
+          git clone --quiet --depth 1 --branch main https://github.com/sethbacon/security-orchestration.git "$RUNNER_TEMP/security-orchestration"
+          python3 tests/gate-identity.py --actions .github/actions --gates "$RUNNER_TEMP/security-orchestration/remediation/gates" --signatures "$RUNNER_TEMP/security-orchestration/remediation/signatures"
+
+      # The check above is itself a guard, so it is watched failing: identical
+      # passes, one byte of drift fails and names the file, an action shipped
+      # without its lib fails, a gate registered ahead of its action is skipped,
+      # comparing nothing fails, and --advisory turns every failure into a
+      # warning at exit 0 -- against a fixture map the test controls.
+      - name: Byte-identity check self-test
+        run: node tests/test-gate-identity.js
