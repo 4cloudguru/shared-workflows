@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.23.0](https://github.com/4cloudguru/shared-workflows/compare/v1.22.1...v1.23.0) (2026-09-09)
+
+
+### Features
+
+* **actions:** add check-docs-claims and check-shared-module-pins gates ([#71](https://github.com/4cloudguru/shared-workflows/issues/71)) ([c469431](https://github.com/4cloudguru/shared-workflows/commit/c4694311531adcddc243fff1894398920f88a1f9))
+
 ## [1.22.1](https://github.com/4cloudguru/shared-workflows/compare/v1.22.0...v1.22.1) (2026-09-08)
 
 
