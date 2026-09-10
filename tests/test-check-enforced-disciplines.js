@@ -502,13 +502,82 @@ try {
         report(libless.status !== 0 && /lib\/task-dirs\.js is missing from the action/.test(libless.stdout),
             'an action shipped without lib/task-dirs.js fails naming the lib, not with a module-resolution trace');
     }
+
+    {
+        // THE CALLER'S OWN COPY OF lib/task-dirs.js IS COMPARED TOO.
+        //
+        // `scripts/check-enforced-disciplines.js` leaves the three consumers in
+        // this release; `scripts/lib/task-dirs.js` cannot, because four to six
+        // non-gate scripts per repository import it and one of them,
+        // copy-build.js, decides what ships inside the signed .vsix. Replay's
+        // gatelib compares a consumer's ENTRY POINT against canonical and
+        // nothing else, so the moment the entry point leaves, that lib is
+        // compared by nobody. The action's step closes the hole, and this pair
+        // of cases is the proof: a caller carrying the identical file passes,
+        // and one byte of drift is a red step naming the file.
+        //
+        // Derived from the file's presence, with no input: the ABSENT case is
+        // every fixture above, all of which still pass, which is what says the
+        // check is silent on a tree that does not carry the file at all.
+        const identical = makeCompliantRepo('task-dirs-identical');
+        write(identical, 'scripts/lib/task-dirs.js', fs.readFileSync(LIB, 'utf8'));
+        report(runStep(identical).status === 0,
+            "a caller whose scripts/lib/task-dirs.js is identical to the action's copy passes");
+
+        const drifted = makeCompliantRepo('task-dirs-drifted');
+        // ONE byte, and a semantically inert one: the point is that the
+        // comparison is over bytes, not over behaviour. A drift that changed
+        // discoverTaskDirs would be caught by other things; a drift that only
+        // looks harmless is the one nothing else in the estate can see.
+        write(drifted, 'scripts/lib/task-dirs.js', `${fs.readFileSync(LIB, 'utf8')} `);
+        const bad = runStep(drifted);
+        report(bad.status === 1, 'one byte of drift in the caller\'s copy fails the step');
+        report(/scripts\/lib\/task-dirs\.js differs from this action's copy/.test(bad.stdout),
+            'and the error names the file and says where to re-sync it from');
+        report(!/\[execution-handler-exercised\]/.test(bad.stdout),
+            'and it is refused before the gate runs, so the drift is not buried under a clean report');
+
+        // COULD-NOT-READ IS NOT DRIFT, AND THE MESSAGE HAS TO SAY WHICH.
+        //
+        // `cmp -s` returns 1 for "the files differ" and 2 for "one of them could
+        // not be read". Folded into one `||` arm, both produced the drift
+        // message, which sends the reader to re-sync a file that is byte-
+        // identical. Both are still refusals -- the step must never run the gate
+        // over a repository whose shared lib it could not read -- so what is
+        // asserted here is the exit code AND which of the two messages appears.
+        report(/cmp_status/.test(RUN_BODY) && /could not be compared/.test(RUN_BODY),
+            "the shipped body branches on cmp's status rather than folding 1 and 2 into one message");
+
+        const unreadable = makeCompliantRepo('task-dirs-unreadable');
+        const hidden = path.join(unreadable, 'scripts/lib/task-dirs.js');
+        write(unreadable, 'scripts/lib/task-dirs.js', fs.readFileSync(LIB, 'utf8'));
+        fs.chmodSync(hidden, 0o000);
+        let readable = true;
+        try { fs.readFileSync(hidden); } catch { readable = false; }
+        if (readable) {
+            // Running as root, where mode 000 is still readable. The static
+            // assertion above is what covers the branch in that environment;
+            // this one records why the dynamic case did not run rather than
+            // silently passing.
+            report(process.getuid !== undefined && process.getuid() === 0,
+                'the unreadable case is only skippable as root, and this run is root');
+        } else {
+            const blocked = runStep(unreadable);
+            report(blocked.status === 1, 'a caller copy that cannot be READ fails the step too, closed rather than open');
+            report(/could not be compared with this action's copy/.test(blocked.stdout),
+                'and says it could not be compared, not that it differs -- the file is byte-identical');
+            report(!/differs from this action's copy/.test(blocked.stdout),
+                'so the reader is not sent to re-sync a file that is already in step');
+        }
+        fs.chmodSync(hidden, 0o644);
+    }
 } finally {
     fs.rmSync(scratchDir, { recursive: true, force: true });
 }
 
 // A floor, because a harness that asserted nothing would print no failures and
 // exit 0 -- the same vacuous green this gate exists to make impossible.
-const ASSERTION_FLOOR = 26;
+const ASSERTION_FLOOR = 35;
 if (assertions < ASSERTION_FLOOR) {
     console.error(`  FAIL harness: made ${assertions} assertion(s), floor is ${ASSERTION_FLOOR}`);
     failures += 1;

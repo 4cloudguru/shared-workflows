@@ -499,12 +499,16 @@ jobs:
       # the move is a no-op to every signature on the day it lands and a
       # single-source thereafter.)
       #
-      # Two gates live there so far, `check-docs-claims` and
-      # `check-shared-module-pins`. A census on 2026-09-09 found five of the
-      # estate's seven copies of those scripts drifted, and twice that day a fix
-      # landed in a hand-copy and never reached canonical — so "which copy is
-      # right" is a live question, and the answer has to be fetched rather than
-      # assumed.
+      # SIX gates live there now — `check-docs-claims` and
+      # `check-shared-module-pins` (2026-09-09), `check-enforced-disciplines`
+      # (2026-09-10), and `check-proxy-parity`, `check-artifact-trust` and
+      # `auth-parity-matrix` with the second wave. Do not restate that list
+      # anywhere else in this file: the byte-identity step below reads it out of
+      # `gatelib.SHARED_ACTIONS` instead, so it cannot go stale the way this
+      # sentence can. A census on 2026-09-09 found five of the estate's seven
+      # copies of the first two scripts drifted, and twice that day a fix landed
+      # in a hand-copy and never reached canonical — so "which copy is right" is
+      # a live question, and the answer has to be fetched rather than assumed.
       #
       # Same terms as every checkout above: PUBLIC, so no `token:` — checkout
       # falls back to the job's own GITHUB_TOKEN, which reads public repositories
@@ -725,6 +729,34 @@ jobs:
       # Link an issue in a private repo and this fails loudly as a GATE ERROR
       # rather than assuming open — at which point widen the credential, not the
       # assumption.
+      # BYTE IDENTITY, ADVISORY HERE AND BLOCKING WHERE THE EDIT COULD HAPPEN.
+      #
+      # The delegated gates exist in two places on purpose: canonical in
+      # security-orchestration's `remediation/gates/`, and inside a composite
+      # action in shared-workflows so an extension's own CI and this replay run
+      # the same bytes without either copying them. gatelib resolves the shared
+      # copy when the checkout is here and reports a mirror that has fallen
+      # behind as a NOTE -- a line in a report nobody re-reads. This step turns
+      # that comparison into an annotation on every run summary in every host,
+      # read out of `gatelib.SHARED_ACTIONS` so it cannot drift from the map.
+      #
+      # WHY IT MUST NOT FAIL THE JOB HERE. Both trees are read at `main`, and
+      # the sanctioned order for a gate change is canonical FIRST, then re-copy
+      # into the action. A blocking comparison of two mains deadlocks that
+      # order: a security-orchestration pull request changing a gate runs this
+      # very job against shared-workflows main, which cannot carry bytes that do
+      # not exist until that pull request merges -- so the change could never
+      # land, and neither could the re-copy that depends on it. The BLOCKING
+      # form of the same script runs in shared-workflows' own self-check, where
+      # a pull request editing a composite script without the same bytes already
+      # being canonical is refused: the one place the wrong-direction edit could
+      # happen. `tests/gate-identity.py` in the shared-workflows checkout is the
+      # single implementation of both.
+      - name: Delegated gates are byte-identical upstream and canonical (advisory)
+        run: |
+          set -euo pipefail
+          python3 suite/shared-workflows/tests/gate-identity.py --actions suite/shared-workflows/.github/actions --gates security-orchestration/remediation/gates --signatures security-orchestration/remediation/signatures --advisory
+
       - name: Replay recorded signatures
         env:
           GH_TOKEN: "${{ github.token }}"

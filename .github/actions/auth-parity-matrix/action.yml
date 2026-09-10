@@ -1,0 +1,238 @@
+---
+name: Every credential branch fails closed, and does so identically
+description: >-
+  Fail a task handler whose provider-credential branches are not guarded alike —
+  a raw service-connection field read with no validating accessor, a credential
+  env var left set on a branch that did not populate it, a secret delivered to
+  the tool without being declared, a constant role-session-name, a missing
+  service connection that does not fail closed.
+
+# WHY A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW.
+#
+# The same record its siblings carry: a reusable workflow reports as
+# `<caller-job-id> / <called-job-name>`, which RENAMES the check. Every job this
+# will run in — the extensions' gate jobs and their `Build and Test …` matrix
+# jobs — is or is headed for a required context on `main`. A composite action is
+# a STEP in the caller's own job, so no job is renamed and no branch protection
+# moves.
+#
+# WHY IT ALSO EXPORTS ITS OWN PATH.
+#
+# Two task L0 suites SPAWN this gate under `npm test` and assert its verdicts —
+# `Tasks/PackerTask/PackerTaskV1/Tests/CredentialFailClosedMatrixL0.ts:622` and
+# `Tasks/TerraformTask/TerraformTaskV5/Tests/CredentialFailClosedMatrixL0.ts:683`
+# on their origin/mains today, each asserting `cells.length > 0` and
+# `unguarded === 0` over a table of branches written out above the assertion.
+# Once a consumer stops carrying a copy under `scripts/`, those suites need the
+# path of the gate the caller's `uses:` pin named — and the runner is the only
+# thing that knows it. So this step writes
+# `SHARED_GATE_AUTH_PARITY_MATRIX=<github.action_path>` into `$GITHUB_ENV`.
+#
+# `$ACTION_PATH` is written VERBATIM: no `dirname`, no suffix, no
+# concatenation. On windows-2025 the value is
+# `D:\a\_actions\4cloudguru\shared-workflows\<sha>\.github\actions\auth-parity-matrix`,
+# and in Git Bash `dirname` returns `.` for that string — it contains no `/`,
+# so the answer is a directory that EXISTS, silently wrong, on one OS only, in a
+# required check. `${AP%/*}` returns the input unchanged for the same reason.
+# Every consumer of this variable is node, whose `path` module is correct for
+# the platform it runs on. Each gate exporting its own directory (rather than
+# one action computing a shared parent) is also what keeps
+# `gatelib.composite_pin()` able to see a true `uses:` line naming THIS action.
+#
+# WHAT IS STILL DONE IN BASH, SAID PLAINLY. What the paragraph above removes is
+# path ARITHMETIC — there is no `dirname`, no `${AP%/*}`, no `realpath`, no
+# `basename` anywhere in the body, and the self-test asserts that. What remains
+# is CONCATENATION: the one `[ -f "$ACTION_PATH/…" ]` preflight and the two
+# `node "$ACTION_PATH/…"` invocations. On windows-2025 those run in Git Bash
+# against a backslashed path, producing a mixed-separator string that Git Bash
+# and node both accept — but that has been measured on Linux against the
+# Windows-shaped string, never on a runner.
+# All of it happens BEFORE or AROUND the export, so the Step-3 canary's FIRST
+# assertion is that the windows-2025 log carries this gate's own report line,
+# and the `SHARED_GATE_*` read-back is only its second. Every one of these fails
+# closed: a preflight that could not see the file exits 1 naming the path it
+# looked at, so a Windows-only path defect is a red step with a legible message
+# rather than a green one over a gate that never ran.
+#
+# NO `lib/` HERE, AND THAT IS MEASURED, NOT ASSUMED. `auth-parity-matrix.cjs`
+# requires `node:fs` and `node:path` and nothing else; the
+# `lib/package-delegation.js` it mentions is prose inside a comment. It
+# therefore has no `SHARED_ACTION_ASSETS` entry in replay's `gatelib`, and
+# inventing one would make every correctly shipped copy of this action read as
+# could-not-run.
+#
+# WHY BOTH FLOOR INPUTS EXIST AND WHY THEY ARE REQUIRED.
+#
+# The gate exits 0 over a repository it enumerated nothing in, and "looked and
+# found none" is a legitimate answer here: on azure-pipelines-release-docs this
+# gate finds zero handler files while reading a real source population. What
+# separates that from "looked nowhere" is the DENOMINATOR, which this gate does
+# report (`scanned`, the count of `.ts` files the handler walk filtered). Hence
+# two floors, both required and neither defaulted:
+#
+#   * `min-scanned` — the denominator. Refused below 1.
+#   * `min-cells` — the enumeration. An explicit integer >= 0, so an honest zero
+#     is a recorded measurement rather than an absent input.
+#
+# Both floors run AFTER the verdict run: an UNGUARDED cell aborts before either
+# line executes. Inline logic in this file may only ever turn a green into a
+# red.
+#
+# WHY THERE IS NO `quiet` INPUT. The gate accepts `--quiet`, which suppresses
+# the human table without producing the machine one. In a CI step that table is
+# the entire output a human ever sees, and a step that printed nothing at all
+# would be indistinguishable from a step that did not run. Callers who want
+# machine output ask for `json`.
+#
+# THE SCRIPT HERE IS BYTE-IDENTICAL TO security-orchestration's
+# `remediation/gates/auth-parity-matrix.cjs` (sha256 `c389975c3a25…`, md5
+# `35f1e70fdcdc…`). Re-wording a comment here is drift: move the wording in
+# canonical first, then re-copy and `cmp`.
+#
+# THIS GATE ARRIVES UPSTREAM WITH THE FIRST SELF-TEST IT HAS EVER HAD.
+# `remediation/gates/test-auth-parity-matrix.js` was written canonically in
+# security-orchestration first (merged as sethbacon/security-orchestration#176)
+# precisely so this action's suite has a parent to be `cp`'d from rather than a
+# suite invented beside the copy — the same byte-identity rule that binds the
+# gate. It is a `.js` file driving a `.cjs` gate on purpose:
+# `remediation/gates/test-*.js` is the glob the replay harness runs, and this
+# gate declares no package floor, so `gate-floor-currency`'s
+# `scripts/test-<basename>` lookup never asks for a `.cjs` sibling.
+
+inputs:
+  root:
+    description: >-
+      Repository root to check. Defaults to `.`. A caller in a job that sets
+      `defaults.run.working-directory` must pass `${{ github.workspace }}`
+      explicitly — a composite action's steps do not inherit that default.
+    required: false
+    default: "."
+  min-scanned:
+    description: >-
+      The lowest number of source files this gate can honestly have READ in this
+      repository. Required, and refused below 1: zero with no denominator cannot
+      tell "looked and found none" from "looked nowhere". Measured with
+      `node auth-parity-matrix.cjs <root> --json` (the `scanned` field).
+    required: true
+  min-cells:
+    description: >-
+      The lowest number of credential cells this repository can honestly
+      enumerate. Required, and an explicit integer >= 0 — a repository with no
+      credential-bearing handlers says `0` here, and says it deliberately,
+      because the denominator above is what carries the weight. Measured with
+      `node auth-parity-matrix.cjs <root> --json` (the `cells` array); record
+      the date beside the value in the caller.
+    required: true
+  json:
+    description: Emit the machine report instead of the human matrix.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Credential fail-closed parity
+      shell: bash
+      # EVERY INPUT ARRIVES THROUGH env, none through ${{ }} inside the script:
+      # a `${{ inputs.root }}` spliced into a `run:` body is substituted before
+      # bash sees the line, so a value carrying a quote or a semicolon becomes
+      # shell rather than an argument. That is zizmor's template-injection
+      # audit, a required check on this repository.
+      env:
+        ROOT: ${{ inputs.root }}
+        JSON: ${{ inputs.json }}
+        MIN_SCANNED: ${{ inputs.min-scanned }}
+        MIN_CELLS: ${{ inputs.min-cells }}
+        ACTION_PATH: ${{ github.action_path }}
+      # ZIZMOR `github-env` IS ACCEPTED HERE, INLINE AND BY NAME.
+      #
+      # That audit fires on any write to `$GITHUB_ENV` from a `run:` block,
+      # because an attacker-controlled value written there becomes an
+      # environment variable in every later step of the caller's job. It is
+      # right to ask, and the answer here is measured rather than asserted: the
+      # only thing this body writes is `github.action_path`, which the RUNNER
+      # produces when it materialises this action at the caller's `uses:` SHA.
+      # No caller input reaches the line — `ROOT`, `JSON` and the floors are
+      # read but never written — and the variable name is a fixed literal. The
+      # export is also the whole point of the action: two task L0 suites resolve
+      # the gate from it, and a step output would move the value through a
+      # caller-written `${{ steps.<id>.outputs… }}` expression, which is weaker,
+      # not stronger.
+      #
+      # Suppressed INLINE rather than in `.github/zizmor.yml`, deliberately:
+      # that file's `ignore:` entries match on BASENAME only (measured with
+      # zizmor 1.30.1, the pinned version — a path entry matches nothing), so a
+      # `github-env` entry there would read `action.yml` and blind this audit
+      # for every composite in this repository, present and future. This marker
+      # covers exactly one step in exactly one file.
+      run: | # zizmor: ignore[github-env]
+        set -euo pipefail
+
+        # `github.action_path` is the whole mechanism that pins the
+        # implementation to the SHA on the caller's `uses:` line. A failure
+        # here should say that, rather than surfacing as a node stack trace.
+        # There is no second file to check: this gate requires nothing beside
+        # itself.
+        [ -f "$ACTION_PATH/auth-parity-matrix.cjs" ] || {
+          echo "::error::auth-parity-matrix.cjs is missing from the action at '$ACTION_PATH'." >&2
+          exit 1
+        }
+
+        # Refuse an unusable floor BEFORE anything else, so a typo is a message
+        # and not a silently permissive comparison.
+        case "$MIN_SCANNED" in
+          "" | *[!0-9]*)
+            echo "::error::min-scanned must be a non-negative integer; got '$MIN_SCANNED'." >&2
+            exit 1
+            ;;
+        esac
+        [ "$MIN_SCANNED" -ge 1 ] || {
+          echo "::error::min-scanned is '$MIN_SCANNED'. Zero with no denominator cannot tell 'looked and found none' from 'looked nowhere', which is the one distinction this floor exists to make." >&2
+          exit 1
+        }
+        case "$MIN_CELLS" in
+          "" | *[!0-9]*)
+            echo "::error::min-cells must be a non-negative integer; got '$MIN_CELLS'." >&2
+            exit 1
+            ;;
+        esac
+
+        # Written AFTER the completeness check, so the variable is never set to
+        # a directory the gate could not have started from. `echo` is safe: a
+        # runner action path contains no newline, and the heredoc form would
+        # only add a delimiter to get wrong.
+        echo "SHARED_GATE_AUTH_PARITY_MATRIX=$ACTION_PATH" >> "$GITHUB_ENV"
+
+        args=("$ROOT")
+        case "$JSON" in
+          "" | false | FALSE | False | 0 | no) ;;
+          *) args+=("--json") ;;
+        esac
+
+        # THE VERDICT RUN. No `|| true`, no pipe, no capture: the gate's exit
+        # code IS the step's verdict, and a filter on the end of a command
+        # replaces its exit code. An UNGUARDED cell aborts here, before the
+        # floors below — which is the intended order: a floor can only ever turn
+        # a green into a red, never a red into a green.
+        node "$ACTION_PATH/auth-parity-matrix.cjs" "${args[@]}"
+
+        # THE FLOORS. A second, redirected run (a redirect is not a pipe and
+        # does not replace an exit code) so the caller's chosen report above is
+        # untouched and machine-readable output exists to compare.
+        node "$ACTION_PATH/auth-parity-matrix.cjs" "$ROOT" --json > "$RUNNER_TEMP/auth-parity-matrix.json"
+        MIN_SCANNED="$MIN_SCANNED" MIN_CELLS="$MIN_CELLS" node -e '
+          const report = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+          const scanned = Number(report.scanned);
+          const cells = (report.cells || []).length;
+          const scannedFloor = Number(process.env.MIN_SCANNED);
+          const cellsFloor = Number(process.env.MIN_CELLS);
+          if (!(scanned >= scannedFloor)) {
+            console.error(`::error::auth-parity-matrix read ${scanned} source file(s), below the declared floor of ${scannedFloor}. A gate that read nothing reports the same clean result as one that read everything — decide whether the walk broke or the repository shrank, and move the number in the same change.`);
+            process.exit(1);
+          }
+          if (!(cells >= cellsFloor)) {
+            console.error(`::error::auth-parity-matrix enumerated ${cells} credential cell(s), below the declared floor of ${cellsFloor}. Either the gate stopped seeing the handlers in this repository, or the floor is stale — decide which, and move the number in the same change that moved the count.`);
+            process.exit(1);
+          }
+          console.log(`auth-parity-matrix floors met: scanned=${scanned} >= ${scannedFloor}, cells=${cells} >= ${cellsFloor}`);
+        ' "$RUNNER_TEMP/auth-parity-matrix.json"
