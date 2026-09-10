@@ -536,6 +536,40 @@ try {
             'and the error names the file and says where to re-sync it from');
         report(!/\[execution-handler-exercised\]/.test(bad.stdout),
             'and it is refused before the gate runs, so the drift is not buried under a clean report');
+
+        // COULD-NOT-READ IS NOT DRIFT, AND THE MESSAGE HAS TO SAY WHICH.
+        //
+        // `cmp -s` returns 1 for "the files differ" and 2 for "one of them could
+        // not be read". Folded into one `||` arm, both produced the drift
+        // message, which sends the reader to re-sync a file that is byte-
+        // identical. Both are still refusals -- the step must never run the gate
+        // over a repository whose shared lib it could not read -- so what is
+        // asserted here is the exit code AND which of the two messages appears.
+        report(/cmp_status/.test(RUN_BODY) && /could not be compared/.test(RUN_BODY),
+            "the shipped body branches on cmp's status rather than folding 1 and 2 into one message");
+
+        const unreadable = makeCompliantRepo('task-dirs-unreadable');
+        const hidden = path.join(unreadable, 'scripts/lib/task-dirs.js');
+        write(unreadable, 'scripts/lib/task-dirs.js', fs.readFileSync(LIB, 'utf8'));
+        fs.chmodSync(hidden, 0o000);
+        let readable = true;
+        try { fs.readFileSync(hidden); } catch { readable = false; }
+        if (readable) {
+            // Running as root, where mode 000 is still readable. The static
+            // assertion above is what covers the branch in that environment;
+            // this one records why the dynamic case did not run rather than
+            // silently passing.
+            report(process.getuid !== undefined && process.getuid() === 0,
+                'the unreadable case is only skippable as root, and this run is root');
+        } else {
+            const blocked = runStep(unreadable);
+            report(blocked.status === 1, 'a caller copy that cannot be READ fails the step too, closed rather than open');
+            report(/could not be compared with this action's copy/.test(blocked.stdout),
+                'and says it could not be compared, not that it differs -- the file is byte-identical');
+            report(!/differs from this action's copy/.test(blocked.stdout),
+                'so the reader is not sent to re-sync a file that is already in step');
+        }
+        fs.chmodSync(hidden, 0o644);
     }
 } finally {
     fs.rmSync(scratchDir, { recursive: true, force: true });
@@ -543,7 +577,7 @@ try {
 
 // A floor, because a harness that asserted nothing would print no failures and
 // exit 0 -- the same vacuous green this gate exists to make impossible.
-const ASSERTION_FLOOR = 31;
+const ASSERTION_FLOOR = 35;
 if (assertions < ASSERTION_FLOOR) {
     console.error(`  FAIL harness: made ${assertions} assertion(s), floor is ${ASSERTION_FLOOR}`);
     failures += 1;

@@ -202,6 +202,28 @@ canonical gate, not to the action. Every floor runs **after** the gate's own
 verdict run, so a finding aborts first: inline logic in an `action.yml` may turn
 a green into a red and never the other way round.
 
+**And `check-enforced-disciplines` gains one derived check in the same release.**
+`scripts/check-enforced-disciplines.js` leaves the three extensions with this
+wave, but `scripts/lib/task-dirs.js` cannot: it has four to six *non-gate*
+importers per repository, and `copy-build.js` uses `discoverTaskDirs` to decide
+what ships in the `.vsix`. `gatelib`'s in-repo comparison is the entry point
+alone, so the moment the entry point goes that lib is compared against nothing
+in three repositories at once. The action therefore `cmp`s
+`<root>/scripts/lib/task-dirs.js` against its own copy whenever that file exists
+— derived, with no input and no opt-out, and green today because all four copies
+are identical at sha256 `dc5b8f5b…`.
+
+That comparison pins each consumer's copy to the copy at the SHA on that
+consumer's `uses:` line, which puts an ordering constraint on the *next* change
+to that lib: a fleet pin roll carrying a changed `lib/task-dirs.js` turns the
+required gate job red in all three extensions until each re-syncs, and `roll.sh`
+rewrites `.github/workflows` pins only, so a blind roll batch cannot carry the
+matching `scripts/lib/` re-sync. So a change to that file lands canonical first,
+is re-copied here and released, and each consumer's re-sync then rides in the
+**same pull request that moves that consumer's pin** — never in a `roll.sh`
+batch, and never as a follow-up. The action's `::error::` says where to re-sync
+from; this says when.
+
 ### The release-PR closing-keyword guard
 
 release-please renders **every** issue reference a commit carries as

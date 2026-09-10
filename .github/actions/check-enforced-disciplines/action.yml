@@ -152,11 +152,39 @@ runs:
         # This is DERIVED, never an input: if the file is there it must match, and
         # there is no `vendored: false` to forget. All four copies are byte-identical
         # today (sha256 dc5b8f5baa78…, md5 b39d2b676259…), so it lands green.
+        #
+        # WHEN A `lib/task-dirs.js` CHANGE LANDS, IT LANDS IN THIS ORDER, and the
+        # last leg is not optional. This comparison pins the consumer's copy to
+        # the copy at the SHA on that consumer's `uses:` line, so a fleet pin roll
+        # that carries a changed lib turns this required gate job RED in all three
+        # extensions until each re-syncs — and `roll.sh` rewrites
+        # `.github/workflows` pins ONLY, so a blind roll batch cannot carry the
+        # matching `scripts/lib/` re-sync with it. Therefore:
+        #   1. the change lands in security-orchestration's canonical
+        #      `remediation/gates/lib/task-dirs.js`;
+        #   2. it is re-copied here and released by the owner;
+        #   3. each consumer's `scripts/lib/task-dirs.js` re-sync rides in the SAME
+        #      pull request that moves that consumer's pin — never in a `roll.sh`
+        #      batch, and never in a follow-up.
+        # The `::error::` below says where to re-sync from; this says when.
+        #
+        # `cmp -s` returns 1 for "differs" and 2 for "could not read one of them",
+        # so the status is captured and branched on rather than folded into one
+        # `||` arm: both are refusals, but sending a reader to re-sync a file that
+        # is byte-identical and merely unreadable wastes the one message this step
+        # gets to send. Either way the step exits 1 before the gate runs.
         if [ -f "$ROOT/scripts/lib/task-dirs.js" ]; then
-          cmp -s "$ROOT/scripts/lib/task-dirs.js" "$ACTION_PATH/lib/task-dirs.js" || {
-            echo "::error::$ROOT/scripts/lib/task-dirs.js differs from this action's copy at the pinned SHA. That file is shared with copy-build.js, which decides .vsix contents, and nothing else compares it. Re-sync it from 4cloudguru/shared-workflows/.github/actions/check-enforced-disciplines/lib/task-dirs.js at the pin, or move the change into canonical first." >&2
+          if cmp -s "$ROOT/scripts/lib/task-dirs.js" "$ACTION_PATH/lib/task-dirs.js"; then
+            :
+          else
+            cmp_status=$?
+            if [ "$cmp_status" -eq 1 ]; then
+              echo "::error::$ROOT/scripts/lib/task-dirs.js differs from this action's copy at the pinned SHA. That file is shared with copy-build.js, which decides .vsix contents, and nothing else compares it. Re-sync it from 4cloudguru/shared-workflows/.github/actions/check-enforced-disciplines/lib/task-dirs.js at the pin, in the SAME pull request that moves this repository's pin, or move the change into canonical first." >&2
+            else
+              echo "::error::$ROOT/scripts/lib/task-dirs.js could not be compared with this action's copy at the pinned SHA (cmp exit $cmp_status — unreadable, not different). Fix the file's permissions or its presence; this step will not run the gate against a repository whose shared lib it could not read." >&2
+            fi
             exit 1
-          }
+          fi
         fi
 
         # WHY `json: true` IS AN ERROR AND NOT A FLAG.

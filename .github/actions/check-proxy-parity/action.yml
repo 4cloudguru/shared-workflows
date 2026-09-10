@@ -40,6 +40,21 @@ description: >-
 # action computing a shared parent for all of them — and it is also what keeps
 # `gatelib.composite_pin()` able to see a true `uses:` line naming THIS action.
 #
+# WHAT IS STILL DONE IN BASH, SAID PLAINLY. What the paragraph above removes is
+# path ARITHMETIC — there is no `dirname`, no `${AP%/*}`, no `realpath`, no
+# `basename` anywhere in the body, and the self-test asserts that. What remains
+# is CONCATENATION: the two `[ -f "$ACTION_PATH/…" ]` preflights (the gate and
+# `lib/package-delegation.js`) and the two `node "$ACTION_PATH/…"` invocations.
+# On windows-2025 those run in Git Bash against a backslashed path, producing a
+# mixed-separator string that Git Bash and node both accept — but that has been
+# measured on Linux against the Windows-shaped string, never on a runner.
+# All of it happens BEFORE or AROUND the export, so the Step-3 canary's FIRST
+# assertion is that the windows-2025 log carries this gate's own report line,
+# and the `SHARED_GATE_*` read-back is only its second. Every one of these fails
+# closed: a preflight that could not see the file exits 1 naming the path it
+# looked at, so a Windows-only path defect is a red step with a legible message
+# rather than a green one over a gate that never ran.
+#
 # WHY THE FLOOR INPUT EXISTS AND WHY IT IS REQUIRED.
 #
 # The gate exits 0 over a repository it enumerated nothing in. Inside `npm test`
@@ -122,7 +137,7 @@ runs:
       #
       # Suppressed INLINE rather than in `.github/zizmor.yml`, deliberately:
       # that file's `ignore:` entries match on BASENAME only (measured with
-      # zizmor 1.30.0, the pinned version — a path entry matches nothing), so a
+      # zizmor 1.30.1, the pinned version — a path entry matches nothing), so a
       # `github-env` entry there would read `action.yml` and blind this audit
       # for every composite in this repository, present and future. This marker
       # covers exactly one step in exactly one file.

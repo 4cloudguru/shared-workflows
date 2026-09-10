@@ -499,12 +499,16 @@ jobs:
       # the move is a no-op to every signature on the day it lands and a
       # single-source thereafter.)
       #
-      # Two gates live there so far, `check-docs-claims` and
-      # `check-shared-module-pins`. A census on 2026-09-09 found five of the
-      # estate's seven copies of those scripts drifted, and twice that day a fix
-      # landed in a hand-copy and never reached canonical — so "which copy is
-      # right" is a live question, and the answer has to be fetched rather than
-      # assumed.
+      # SIX gates live there now — `check-docs-claims` and
+      # `check-shared-module-pins` (2026-09-09), `check-enforced-disciplines`
+      # (2026-09-10), and `check-proxy-parity`, `check-artifact-trust` and
+      # `auth-parity-matrix` with the second wave. Do not restate that list
+      # anywhere else in this file: the byte-identity step below reads it out of
+      # `gatelib.SHARED_ACTIONS` instead, so it cannot go stale the way this
+      # sentence can. A census on 2026-09-09 found five of the estate's seven
+      # copies of the first two scripts drifted, and twice that day a fix landed
+      # in a hand-copy and never reached canonical — so "which copy is right" is
+      # a live question, and the answer has to be fetched rather than assumed.
       #
       # Same terms as every checkout above: PUBLIC, so no `token:` — checkout
       # falls back to the job's own GITHUB_TOKEN, which reads public repositories
@@ -725,6 +729,88 @@ jobs:
       # Link an issue in a private repo and this fails loudly as a GATE ERROR
       # rather than assuming open — at which point widen the credential, not the
       # assumption.
+      # BYTE IDENTITY, AS A CHECK THAT CAN TURN RED.
+      #
+      # The delegated gates exist in two places on purpose: canonical in
+      # security-orchestration's `remediation/gates/`, and inside a composite
+      # action in shared-workflows so an extension's own CI and this replay run
+      # the same bytes without either copying them. gatelib resolves the shared
+      # copy when the checkout is here, and reports a mirror that has fallen
+      # behind as a NOTE -- which is a line in a report nobody re-reads. Nothing
+      # anywhere turned that difference red. This does, in the one place where
+      # both trees are on disk together.
+      #
+      # BLAST RADIUS, STATED BECAUSE IT IS THE POINT. This runs in every repo
+      # that calls this workflow, and both trees are read at `main`, so drift
+      # between them is red on every pull request in all of them at once. That
+      # is the intended severity -- two copies of a gate that cannot answer the
+      # same way is an estate-wide condition -- and the fix is always at the
+      # SOURCE: change canonical, then re-copy into the action. Never the other
+      # way round, and never by editing one host.
+      #
+      # The pairs are read out of gatelib itself rather than restated here, so a
+      # gate registered there is covered here on the same commit and this step
+      # cannot drift from the map it is enforcing. A gate registered AHEAD of
+      # its action is skipped and said out loud: that ordering is deliberate
+      # (gatelib's own comment records why), and until the directory exists
+      # there is nothing upstream for any consumer to run. A directory that
+      # EXISTS but is missing one of the gate's files is not skipped -- that is
+      # the incomplete-action state gatelib exits 2 on, and it is named here
+      # rather than waited for.
+      - name: Delegated gates are byte-identical upstream and canonical
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import filecmp
+          import os
+          import sys
+
+          SIGNATURES = os.path.join("security-orchestration", "remediation", "signatures")
+          sys.path.insert(0, SIGNATURES)
+          import gatelib  # noqa: E402  -- resolved from the checkout above
+
+          CANONICAL = os.path.join("security-orchestration", "remediation", "gates")
+          UPSTREAM = os.path.join("suite", "shared-workflows", ".github", "actions")
+
+          if not os.path.isdir(UPSTREAM):
+              print(f"::error::{UPSTREAM} is not present. This job checks 4cloudguru/shared-workflows out at main precisely so the delegated gates can be compared; without it the comparison would pass having compared nothing.")
+              raise SystemExit(1)
+
+          compared = 0
+          drifted = []
+          absent = []
+          for gate, action in sorted(gatelib.SHARED_ACTIONS.items()):
+              action_dir = os.path.join(UPSTREAM, action)
+              if not os.path.isdir(action_dir):
+                  print(f"skipped: {gate} is registered for the '{action}' action, which does not exist upstream yet -- no consumer can be running it, so there is nothing to compare.")
+                  continue
+              for rel in gatelib.gate_files(gate):
+                  here = os.path.join(action_dir, rel)
+                  there = os.path.join(CANONICAL, rel)
+                  if not os.path.isfile(there):
+                      absent.append(f"{there} (canonical copy of {gate})")
+                      continue
+                  if not os.path.isfile(here):
+                      absent.append(f"{here} (the '{action}' action ships {gate} without it)")
+                      continue
+                  compared += 1
+                  if not filecmp.cmp(here, there, shallow=False):
+                      drifted.append(f"{here} differs from {there}")
+
+          print(f"compared {compared} file(s) across {len(gatelib.SHARED_ACTIONS)} registered gate(s)")
+
+          for line in absent:
+              print(f"::error::a delegated gate is incomplete: {line} is missing. gatelib treats a present-but-incomplete action as could-not-run (exit 2) in every host at once; ship the missing file or unregister the gate.")
+          for line in drifted:
+              print(f"::error::{line}. These two copies are required to be byte-identical -- gatelib runs whichever one it finds, so the same class can be answered two ways. Fix it in security-orchestration's remediation/gates/ first, then re-copy into the action.")
+
+          if absent or drifted:
+              raise SystemExit(1)
+          if compared == 0:
+              print("::error::no delegated gate file was compared. Every gate in gatelib.SHARED_ACTIONS resolved to an action directory that is not there, which means this check is enforcing nothing -- the same vacuous green the gates themselves exist to refuse.")
+              raise SystemExit(1)
+          PY
+
       - name: Replay recorded signatures
         env:
           GH_TOKEN: "${{ github.token }}"

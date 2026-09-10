@@ -11,7 +11,7 @@
 # auth-parity-matrix). Each carries an inline `# zizmor: ignore[github-env]`
 # on its `run: |` line with the reasoning beside it. It is NOT an entry here
 # because the `ignore:` lists in this file match on BASENAME only -- measured
-# against zizmor 1.30.0, the version workflow-security.yml pins: a full path
+# against zizmor 1.30.1, the version workflow-security.yml pins: a full path
 # entry matches nothing, so the only entry that would work reads `action.yml`
 # and would blind that audit for every composite in this repository, present
 # and future. A per-step marker at the site is the narrower instrument.

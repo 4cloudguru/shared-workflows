@@ -357,6 +357,100 @@ actionCheck(RUN_BODY !== null && RUN_BODY.includes('check-artifact-trust.js'),
   'extracted the gate step from action.yml')
 actionCheck(!/\$\{\{/.test(RUN_BODY),
   'the gate body interpolates no ${{ }} expression; inputs arrive through env')
+// ── the `env:` BLOCK THAT FEEDS THE BODY, AND THE INPUTS THAT FEED THAT ──────
+//
+// The idiom above extracts the `run:` body and drives it with an env of this
+// harness's own making, which leaves the WIRING between the two asserted by
+// nothing: delete one `inputs.<x> -> <ENV>` line from action.yml and every case
+// below still passes, actionlint is silent and zizmor is silent, while every
+// real caller dies at runtime under `set -u`. The same goes for the
+// required-ness the whole floor design rests on — "REQUIRED with no default: a
+// caller must have measured" is a declaration, and GitHub does not enforce
+// `required:` on an action input at all. So both are parsed out of the shipped
+// file and pinned here.
+
+function extractEnvBlock(yaml) {
+    const lines = yaml.split('\n');
+    const runAt = lines.findIndex((l) => /^\s+run: \|\s*(#.*)?$/.test(l));
+    if (runAt === -1) return null;
+    let envAt = -1;
+    for (let i = runAt; i >= 0; i--) { if (/^\s+env:\s*$/.test(lines[i])) { envAt = i; break; } }
+    if (envAt === -1) return null;
+    const indent = lines[envAt].match(/^(\s*)/)[1].length;
+    const bindings = {};
+    for (let i = envAt + 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.trim() === '') continue;
+        if (line.match(/^(\s*)/)[1].length <= indent) break;
+        if (/^\s*#/.test(line)) continue;
+        const m = /^\s*([A-Za-z_][A-Za-z0-9_]*):\s*(.*?)\s*$/.exec(line);
+        if (m !== null) bindings[m[1]] = m[2];
+    }
+    return bindings;
+}
+
+function parseInputs(yaml) {
+    const lines = yaml.split('\n');
+    const start = lines.findIndex((l) => /^inputs:\s*$/.test(l));
+    if (start === -1) return null;
+    const inputs = {};
+    let current = null;
+    for (let i = start + 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.trim() === '' || /^\s*#/.test(line)) continue;
+        if (/^\S/.test(line)) break;
+        const named = /^ {2}([A-Za-z][\w-]*):\s*$/.exec(line);
+        if (named !== null) { current = named[1]; inputs[current] = { keys: [], required: null }; continue; }
+        if (current === null) continue;
+        const key = /^ {4}([A-Za-z][\w-]*):\s*(.*?)\s*$/.exec(line);
+        if (key === null) continue;
+        inputs[current].keys.push(key[1]);
+        if (key[1] === 'required') inputs[current].required = key[2];
+    }
+    return inputs;
+}
+
+const ACTION_YAML = fs.readFileSync(ACTION, 'utf8');
+const ENV_BINDINGS = extractEnvBlock(ACTION_YAML);
+const EXPECTED_BINDINGS = {
+  ROOT: '${{ inputs.root }}',
+  JSON: '${{ inputs.json }}',
+  MIN_SCANNED: '${{ inputs.min-scanned }}',
+  MIN_SITES: '${{ inputs.min-sites }}',
+  ACTION_PATH: '${{ github.action_path }}',
+};
+
+const boundKeys = ENV_BINDINGS === null ? [] : Object.keys(ENV_BINDINGS).sort();
+const wantedKeys = Object.keys(EXPECTED_BINDINGS).sort();
+actionCheck(boundKeys.join(',') === wantedKeys.join(','),
+    `the step binds exactly ${wantedKeys.join(', ')} through env: and nothing else (found ${boundKeys.join(', ') || 'nothing'})`);
+actionCheck(wantedKeys.every((k) => ENV_BINDINGS !== null && ENV_BINDINGS[k] === EXPECTED_BINDINGS[k]),
+    'and each is bound to the expression the body needs — a deleted or re-pointed inputs.<x> line is a failure here rather than a runtime one in every caller');
+
+// Derived rather than listed, so a variable ADDED to the body later without a
+// binding is caught too. GITHUB_ENV and RUNNER_TEMP are the runner's, not the
+// action's, and are the only two exempt.
+const RUNNER_PROVIDED = new Set(['GITHUB_ENV', 'RUNNER_TEMP']);
+const referenced = new Set();
+for (const m of RUN_BODY.matchAll(/\$\{?([A-Z][A-Z0-9_]*)\}?/g)) referenced.add(m[1]);
+const unbound = [...referenced].filter((v) => !RUNNER_PROVIDED.has(v) && !(ENV_BINDINGS !== null && v in ENV_BINDINGS));
+actionCheck(unbound.length === 0,
+    `every $VAR the shipped body reads has a binding in the step's env: block (unbound: ${JSON.stringify(unbound)})`);
+actionCheck(referenced.has('MIN_SCANNED') && referenced.has('MIN_SITES') && referenced.has('ACTION_PATH') && referenced.has('ROOT') && referenced.has('JSON'),
+    `and that scan is not vacuous — it found ${referenced.size} variable(s) in the body, including the floor and the action path`);
+
+const INPUTS = parseInputs(ACTION_YAML);
+for (const name of ['min-scanned', 'min-sites']) {
+    const spec = INPUTS === null ? undefined : INPUTS[name];
+    actionCheck(spec !== undefined && spec.required === 'true',
+        `\`${name}\` is declared required: true`);
+    actionCheck(spec !== undefined && !spec.keys.includes('default'),
+        `and declares NO default — GitHub does not enforce required:, so a default would turn an omitted \`${name}\` into a silently permissive number instead of the refusal the body makes`);
+}
+actionCheck(INPUTS !== null && INPUTS.root !== undefined && INPUTS.root.keys.includes('default')
+    && INPUTS.json !== undefined && INPUTS.json.keys.includes('default'),
+    'and the reader can see a default where one exists: root and json both declare one, so the assertions above are not passing on a parser that reads nothing');
+
 
 /**
  * Run the extracted step with the env the action binds.
@@ -369,12 +463,38 @@ actionCheck(!/\$\{\{/.test(RUN_BODY),
  * rather than matched loosely: a trailing separator or a `dirname` would still
  * match a regex and would still be wrong.
  */
+// A LINE THAT IS ALREADY IN $GITHUB_ENV WHEN THE STEP STARTS.
+//
+// The env file a runner hands a step is not empty: it accumulates every earlier
+// step's exports for the whole job, and design section 0 puts two or three of
+// these composites in the SAME Build-and-Test job. Seeding the file proves the
+// step APPENDS — against an empty file `>> "$GITHUB_ENV"` and `> "$GITHUB_ENV"`
+// are indistinguishable, and the truncating form would erase the sibling
+// composite's export and every other variable the job had set.
+const ENV_SEED = 'PRE_EXISTING_FROM_AN_EARLIER_STEP=kept\n'
+
+/** The gate's machine envelope, dug out of a step's stdout, or null.
+ *
+ *  The step prints the gate's chosen report and THEN its own floor line, so the
+ *  JSON is a prefix rather than the whole stream. A human report parses as
+ *  nothing, which is the point: this is what tells a live `json:` input from an
+ *  inert one. */
+const envelopeOf = (stdout) => {
+  const open = stdout.indexOf('{')
+  const close = stdout.lastIndexOf('}')
+  if (open === -1 || close < open) return null
+  try {
+    const parsed = JSON.parse(stdout.slice(open, close + 1))
+    return parsed !== null && typeof parsed === 'object' ? parsed : null
+  } catch { return null }
+}
+
 function runStep (root, { json = 'false', minScanned = '1', minSites = '0', actionPath } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-trust-step-'))
   const script = path.join(dir, 'step.sh')
   fs.writeFileSync(script, RUN_BODY)
   const envFile = path.join(dir, 'github_env')
-  fs.writeFileSync(envFile, '')
+  fs.writeFileSync(envFile, ENV_SEED)
   const r = spawnSync('bash', [script], {
     cwd: dir,
     encoding: 'utf8',
@@ -391,7 +511,7 @@ function runStep (root, { json = 'false', minScanned = '1', minSites = '0', acti
   })
   const written = fs.readFileSync(envFile, 'utf8')
   fs.rmSync(dir, { recursive: true, force: true })
-  return { status: r.status, stdout: `${r.stdout}${r.stderr}`, env: written }
+  return { status: r.status, stdout: `${r.stdout}${r.stderr}`, out: r.stdout, env: written }
 }
 
 const exported = (written) => {
@@ -424,8 +544,8 @@ const scratch = []
   actionCheck(atFloor.status === 0, `floors AT the measured counts pass (exit ${atFloor.status})`, atFloor.stdout)
   actionCheck(exported(atFloor.env) === ACTION_DIR,
     'the step exports SHARED_GATE_CHECK_ARTIFACT_TRUST=<action path>, verbatim', JSON.stringify(exported(atFloor.env)))
-  actionCheck(atFloor.env === `SHARED_GATE_CHECK_ARTIFACT_TRUST=${ACTION_DIR}\n`,
-    'and writes exactly that one line to GITHUB_ENV, with no second line to be parsed wrong', JSON.stringify(atFloor.env))
+  actionCheck(atFloor.env === `${ENV_SEED}SHARED_GATE_CHECK_ARTIFACT_TRUST=${ACTION_DIR}\n`,
+    'and APPENDS exactly that one line — the line an earlier step wrote is still there, so a truncating `>` is not what shipped', JSON.stringify(atFloor.env))
 
   const overScanned = runStep(green, { minScanned: String(scanned + 1), minSites: String(sites) })
   actionCheck(overScanned.status === 1 && overScanned.stdout.includes(`read ${scanned} source file(s), below the declared floor of ${scanned + 1}`),
@@ -443,13 +563,94 @@ const scratch = []
   const zeroScanned = runStep(green, { minScanned: '0', minSites: '0' })
   actionCheck(zeroScanned.status === 1 && /min-scanned is '0'/.test(zeroScanned.stdout),
     'min-scanned: 0 is refused', zeroScanned.stdout)
-  actionCheck(zeroScanned.env === '' && !/PINNED-DELEGATE/.test(zeroScanned.stdout),
-    'and refused BEFORE the gate runs — nothing in GITHUB_ENV, no report emitted', JSON.stringify(zeroScanned.stdout))
+  actionCheck(zeroScanned.env === ENV_SEED && !/PINNED-DELEGATE/.test(zeroScanned.stdout),
+    'and refused BEFORE the gate runs — nothing added to GITHUB_ENV, no report emitted', JSON.stringify(zeroScanned.stdout))
 
   const junk = runStep(green, { minScanned: '1', minSites: 'many' })
   actionCheck(junk.status === 1 && /min-sites must be a non-negative integer/.test(junk.stdout),
     'a non-numeric floor is refused rather than compared', junk.stdout)
-  actionCheck(junk.env === '', 'and it too is refused before anything is exported')
+  actionCheck(junk.env === ENV_SEED, 'and it too is refused before anything is exported')
+
+  // The denominator's own junk arm, which nothing exercised: min-scanned and
+  // min-sites are two separate `case` statements and a mutation to either is
+  // invisible to a suite that only ever feeds junk to the other.
+  const junkScanned = runStep(green, { minScanned: 'lots', minSites: '0' })
+  actionCheck(junkScanned.status === 1 && /min-scanned must be a non-negative integer; got 'lots'/.test(junkScanned.stdout),
+    'a non-numeric min-scanned is refused too, quoting what it got', junkScanned.stdout)
+  actionCheck(junkScanned.env === ENV_SEED, 'and it too is refused before anything is exported')
+
+  // THE EMPTY STRING IS THE FLOOR VALUE A REAL CALLER PRODUCES.
+  //
+  // GitHub does NOT enforce `required: true` on an action input: a caller that
+  // simply omits `min-scanned:` or `min-sites:` reaches this body with the
+  // variable set to the empty string. The `"" |` arm of each case is therefore
+  // the only thing standing between an omitted input and a comparison against
+  // `Number('')`, which is 0 — a vacuously green required check.
+  const omittedScanned = runStep(green, { minScanned: '', minSites: '0' })
+  actionCheck(omittedScanned.status === 1 && /min-scanned must be a non-negative integer; got ''/.test(omittedScanned.stdout),
+    "an OMITTED min-scanned arrives as '' and is refused, quoting what it got", omittedScanned.stdout)
+  actionCheck(omittedScanned.env === ENV_SEED, 'and it too is refused before anything is exported')
+
+  const omittedSites = runStep(green, { minScanned: '1', minSites: '' })
+  actionCheck(omittedSites.status === 1 && /min-sites must be a non-negative integer; got ''/.test(omittedSites.stdout),
+    "an OMITTED min-sites arrives as '' and is refused, quoting what it got", omittedSites.stdout)
+  actionCheck(omittedSites.env === ENV_SEED, 'and it too is refused before anything is exported')
+
+  // THE `json:` INPUT, EXERCISED RATHER THAN DECLARED. Making the `--json` arm
+  // a no-op leaves a caller that asked for machine output holding the human
+  // report, and nothing else here would notice.
+  const machine = runStep(green, { json: 'true', minScanned: String(scanned), minSites: String(sites) })
+  const envelope = envelopeOf(machine.out)
+  actionCheck(machine.status === 0 && envelope !== null,
+    "json: true makes the step emit the gate's machine envelope", machine.stdout)
+  actionCheck(envelope !== null
+    && typeof envelope.root === 'string'
+    && Array.isArray(envelope.sites)
+    && typeof envelope.failures === 'number'
+    && typeof envelope.scanned === 'number'
+    && Array.isArray(envelope.staleFloors),
+  "and it is this gate's own envelope — root, sites, failures, scanned, staleFloors", JSON.stringify(envelope && Object.keys(envelope)))
+  actionCheck(envelopeOf(atFloor.out) === null,
+    'while the default json: false yields the human report, which parses as no envelope at all')
+}
+
+{
+  // THE DENOMINATOR, PINNED TO A COUNT THIS FILE CHOSE.
+  //
+  // `scanned` is the number design section 4b makes load-bearing:
+  // azure-pipelines-release-docs is wired to this gate precisely because it
+  // reports 0 sites over 34 scanned, and "looked and found none" is only
+  // distinguishable from "looked nowhere" if that number is true. Every other
+  // `scanned` assertion in this file is self-referential — it reads the gate's
+  // own answer and floors against it — so a gate that fabricated its
+  // denominator would satisfy all of them. This one counts the files itself.
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-trust-denominator-')))
+  scratch.push(root)
+  const dir = path.join(root, 'Tasks', 'Installer', 'InstallerV1')
+  fs.mkdirSync(path.join(dir, 'src', 'nested'), { recursive: true })
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'installer', dependencies: { [CORE]: `^${FLOOR}` } }))
+  const PLANTED = ['src/a.ts', 'src/b.ts', 'src/nested/c.ts', 'src/nested/d.ts']
+  for (const rel of PLANTED) fs.writeFileSync(path.join(dir, rel), 'export const x = 1;\n')
+  // Neither of these is a `**/src/**/*.ts`, so neither may move the count.
+  fs.writeFileSync(path.join(dir, 'src', 'notes.md'), 'not source\n')
+  fs.writeFileSync(path.join(dir, 'outside.ts'), 'export const y = 2;\n')
+
+  const measured = run(root)
+  actionCheck(measured.body !== null && Number(measured.body.scanned) === PLANTED.length,
+    `scanned is the count of **/src/**/*.ts files this test planted (${PLANTED.length}), not a number the gate invented`,
+    measured.body && measured.body.scanned)
+  actionCheck(measured.body !== null && Number(measured.body.scanned) !== PLANTED.length + 2,
+    'and the markdown file and the .ts outside src/ are excluded from it')
+
+  // A tree with NO source at all is the "looked nowhere" case, and this gate
+  // refuses it itself rather than reporting a clean zero — which is why the
+  // empty-root assertion here is exit 1 and a named refusal, not scanned === 0.
+  const bare = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-trust-empty-')))
+  scratch.push(bare)
+  const nothing = spawnSync(process.execPath, [GATE, bare, '--json'], { encoding: 'utf8' })
+  actionCheck(nothing.status === 1 && /files found/.test(`${nothing.stderr}`) && !/"scanned"/.test(`${nothing.stdout}`),
+    'a root with no source files is refused by the gate itself as a vacuous pass, rather than reported as a clean zero',
+    `exit ${nothing.status}: ${nothing.stderr}`)
 }
 
 {
@@ -479,7 +680,7 @@ const scratch = []
   const absent = runStep(green, { actionPath: nowhere })
   actionCheck(absent.status === 1 && /check-artifact-trust\.js is missing from the action/.test(absent.stdout),
     'an action path with no gate fails naming the gate', absent.stdout)
-  actionCheck(absent.env === '', 'and exports nothing to GITHUB_ENV')
+  actionCheck(absent.env === ENV_SEED, 'and exports nothing to GITHUB_ENV')
 
   // `require('./lib/package-delegation.js')` resolves against the SCRIPT, so an
   // action shipped without lib/ dies in module resolution — which node reports
@@ -493,7 +694,7 @@ const scratch = []
   const libless = runStep(green, { actionPath: noLib })
   actionCheck(libless.status === 1 && /lib\/package-delegation\.js is missing from the action/.test(libless.stdout),
     'an action shipped without lib/ fails naming the lib, not with a module-resolution trace', libless.stdout)
-  actionCheck(libless.env === '', 'and exports nothing to GITHUB_ENV')
+  actionCheck(libless.env === ENV_SEED, 'and exports nothing to GITHUB_ENV')
 
   // VERBATIM, against a path that is not this repository's. A real directory,
   // so the preflight passes and the export actually happens, and its absolute
@@ -533,7 +734,7 @@ for (const d of scratch) fs.rmSync(d, { recursive: true, force: true })
 // A floor on the action section itself, because a harness that asserted nothing
 // would print no failures and exit 0 — the same vacuous green the gate exists
 // to make impossible.
-const ACTION_ASSERTION_FLOOR = 20
+const ACTION_ASSERTION_FLOOR = 45
 if (actionAssertions < ACTION_ASSERTION_FLOOR) {
   console.error(`  FAIL harness: the action-body section made ${actionAssertions} assertion(s), floor is ${ACTION_ASSERTION_FLOOR}`)
   failures += 1

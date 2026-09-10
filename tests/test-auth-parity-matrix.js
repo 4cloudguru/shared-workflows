@@ -530,6 +530,100 @@ actionReport(RUN_BODY !== null && RUN_BODY.includes('auth-parity-matrix.cjs'),
     'extracted the gate step from action.yml');
 actionReport(!/\$\{\{/.test(RUN_BODY),
     'the gate body interpolates no ${{ }} expression; inputs arrive through env');
+// ── the `env:` BLOCK THAT FEEDS THE BODY, AND THE INPUTS THAT FEED THAT ──────
+//
+// The idiom above extracts the `run:` body and drives it with an env of this
+// harness's own making, which leaves the WIRING between the two asserted by
+// nothing: delete one `inputs.<x> -> <ENV>` line from action.yml and every case
+// below still passes, actionlint is silent and zizmor is silent, while every
+// real caller dies at runtime under `set -u`. The same goes for the
+// required-ness the whole floor design rests on — "REQUIRED with no default: a
+// caller must have measured" is a declaration, and GitHub does not enforce
+// `required:` on an action input at all. So both are parsed out of the shipped
+// file and pinned here.
+
+function extractEnvBlock(yaml) {
+    const lines = yaml.split('\n');
+    const runAt = lines.findIndex((l) => /^\s+run: \|\s*(#.*)?$/.test(l));
+    if (runAt === -1) return null;
+    let envAt = -1;
+    for (let i = runAt; i >= 0; i--) { if (/^\s+env:\s*$/.test(lines[i])) { envAt = i; break; } }
+    if (envAt === -1) return null;
+    const indent = lines[envAt].match(/^(\s*)/)[1].length;
+    const bindings = {};
+    for (let i = envAt + 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.trim() === '') continue;
+        if (line.match(/^(\s*)/)[1].length <= indent) break;
+        if (/^\s*#/.test(line)) continue;
+        const m = /^\s*([A-Za-z_][A-Za-z0-9_]*):\s*(.*?)\s*$/.exec(line);
+        if (m !== null) bindings[m[1]] = m[2];
+    }
+    return bindings;
+}
+
+function parseInputs(yaml) {
+    const lines = yaml.split('\n');
+    const start = lines.findIndex((l) => /^inputs:\s*$/.test(l));
+    if (start === -1) return null;
+    const inputs = {};
+    let current = null;
+    for (let i = start + 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.trim() === '' || /^\s*#/.test(line)) continue;
+        if (/^\S/.test(line)) break;
+        const named = /^ {2}([A-Za-z][\w-]*):\s*$/.exec(line);
+        if (named !== null) { current = named[1]; inputs[current] = { keys: [], required: null }; continue; }
+        if (current === null) continue;
+        const key = /^ {4}([A-Za-z][\w-]*):\s*(.*?)\s*$/.exec(line);
+        if (key === null) continue;
+        inputs[current].keys.push(key[1]);
+        if (key[1] === 'required') inputs[current].required = key[2];
+    }
+    return inputs;
+}
+
+const ACTION_YAML = fs.readFileSync(ACTION, 'utf8');
+const ENV_BINDINGS = extractEnvBlock(ACTION_YAML);
+const EXPECTED_BINDINGS = {
+    ROOT: '${{ inputs.root }}',
+    JSON: '${{ inputs.json }}',
+    MIN_SCANNED: '${{ inputs.min-scanned }}',
+    MIN_CELLS: '${{ inputs.min-cells }}',
+    ACTION_PATH: '${{ github.action_path }}',
+};
+
+const boundKeys = ENV_BINDINGS === null ? [] : Object.keys(ENV_BINDINGS).sort();
+const wantedKeys = Object.keys(EXPECTED_BINDINGS).sort();
+actionReport(boundKeys.join(',') === wantedKeys.join(','),
+    `the step binds exactly ${wantedKeys.join(', ')} through env: and nothing else (found ${boundKeys.join(', ') || 'nothing'})`);
+actionReport(wantedKeys.every((k) => ENV_BINDINGS !== null && ENV_BINDINGS[k] === EXPECTED_BINDINGS[k]),
+    'and each is bound to the expression the body needs — a deleted or re-pointed inputs.<x> line is a failure here rather than a runtime one in every caller');
+
+// Derived rather than listed, so a variable ADDED to the body later without a
+// binding is caught too. GITHUB_ENV and RUNNER_TEMP are the runner's, not the
+// action's, and are the only two exempt.
+const RUNNER_PROVIDED = new Set(['GITHUB_ENV', 'RUNNER_TEMP']);
+const referenced = new Set();
+for (const m of RUN_BODY.matchAll(/\$\{?([A-Z][A-Z0-9_]*)\}?/g)) referenced.add(m[1]);
+const unbound = [...referenced].filter((v) => !RUNNER_PROVIDED.has(v) && !(ENV_BINDINGS !== null && v in ENV_BINDINGS));
+actionReport(unbound.length === 0,
+    `every $VAR the shipped body reads has a binding in the step's env: block (unbound: ${JSON.stringify(unbound)})`);
+actionReport(referenced.has('MIN_SCANNED') && referenced.has('MIN_CELLS') && referenced.has('ACTION_PATH') && referenced.has('ROOT') && referenced.has('JSON'),
+    `and that scan is not vacuous — it found ${referenced.size} variable(s) in the body, including the floor and the action path`);
+
+const INPUTS = parseInputs(ACTION_YAML);
+for (const name of ['min-scanned', 'min-cells']) {
+    const spec = INPUTS === null ? undefined : INPUTS[name];
+    actionReport(spec !== undefined && spec.required === 'true',
+        `\`${name}\` is declared required: true`);
+    actionReport(spec !== undefined && !spec.keys.includes('default'),
+        `and declares NO default — GitHub does not enforce required:, so a default would turn an omitted \`${name}\` into a silently permissive number instead of the refusal the body makes`);
+}
+actionReport(INPUTS !== null && INPUTS.root !== undefined && INPUTS.root.keys.includes('default')
+    && INPUTS.json !== undefined && INPUTS.json.keys.includes('default'),
+    'and the reader can see a default where one exists: root and json both declare one, so the assertions above are not passing on a parser that reads nothing');
+
 
 /**
  * Run the extracted step with the env the action binds.
@@ -540,12 +634,40 @@ actionReport(!/\$\{\{/.test(RUN_BODY),
  * is read back and compared verbatim rather than matched loosely — a trailing
  * separator or a `dirname` would still match a regex and would still be wrong.
  */
+// A LINE THAT IS ALREADY IN $GITHUB_ENV WHEN THE STEP STARTS.
+//
+// The env file a runner hands a step is not empty: it accumulates every earlier
+// step's exports for the whole job, and design section 0 puts two of these
+// composites in the SAME Build-and-Test job (azure-pipelines-packer's
+// PackerTaskV1 job spawns both ProxyParityL0 and CredentialFailClosedMatrixL0).
+// Seeding the file proves the step APPENDS — against an empty file
+// `>> "$GITHUB_ENV"` and `> "$GITHUB_ENV"` are indistinguishable, and the
+// truncating form would erase the sibling composite's export and every other
+// variable the job had set.
+const ENV_SEED = 'PRE_EXISTING_FROM_AN_EARLIER_STEP=kept\n';
+
+/** The gate's machine envelope, dug out of a step's stdout, or null.
+ *
+ *  The step prints the gate's chosen report and THEN its own floor line, so the
+ *  JSON is a prefix rather than the whole stream. A human matrix parses as
+ *  nothing, which is the point: this is what tells a live `json:` input from an
+ *  inert one. */
+const envelopeOf = (stdout) => {
+    const open = stdout.indexOf('{');
+    const close = stdout.lastIndexOf('}');
+    if (open === -1 || close < open) return null;
+    try {
+        const parsed = JSON.parse(stdout.slice(open, close + 1));
+        return parsed !== null && typeof parsed === 'object' ? parsed : null;
+    } catch { return null; }
+};
+
 function runStep(root, { json = 'false', minScanned = '1', minCells = '0', actionPath } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auth-parity-step-'));
     const script = path.join(dir, 'step.sh');
     fs.writeFileSync(script, RUN_BODY);
     const envFile = path.join(dir, 'github_env');
-    fs.writeFileSync(envFile, '');
+    fs.writeFileSync(envFile, ENV_SEED);
     const r = spawnSync('bash', [script], {
         cwd: dir,
         encoding: 'utf8',
@@ -562,7 +684,7 @@ function runStep(root, { json = 'false', minScanned = '1', minCells = '0', actio
     });
     const written = fs.readFileSync(envFile, 'utf8');
     fs.rmSync(dir, { recursive: true, force: true });
-    return { status: r.status, stdout: `${r.stdout}${r.stderr}`, env: written };
+    return { status: r.status, stdout: `${r.stdout}${r.stderr}`, out: r.stdout, env: written };
 }
 
 const exportedGate = (written) => {
@@ -582,8 +704,8 @@ const exportedGate = (written) => {
     actionReport(atFloor.status === 0, `floors AT the measured counts pass (exit ${atFloor.status})`);
     actionReport(exportedGate(atFloor.env) === ACTION_DIR,
         `the step exports SHARED_GATE_AUTH_PARITY_MATRIX=<action path>, verbatim (got ${JSON.stringify(exportedGate(atFloor.env))})`);
-    actionReport(atFloor.env === `SHARED_GATE_AUTH_PARITY_MATRIX=${ACTION_DIR}\n`,
-        'and writes exactly that one line to GITHUB_ENV, with no second line to be parsed wrong');
+    actionReport(atFloor.env === `${ENV_SEED}SHARED_GATE_AUTH_PARITY_MATRIX=${ACTION_DIR}\n`,
+        'and APPENDS exactly that one line — the line an earlier step wrote is still there, so a truncating `>` is not what shipped');
 
     const overScanned = runStep(green, { minScanned: String(scanned + 1), minCells: String(cells) });
     actionReport(overScanned.status === 1 && overScanned.stdout.includes(`read ${scanned} source file(s), below the declared floor of ${scanned + 1}`),
@@ -602,13 +724,57 @@ const exportedGate = (written) => {
     const zeroScanned = runStep(green, { minScanned: '0', minCells: '0' });
     actionReport(zeroScanned.status === 1 && /min-scanned is '0'/.test(zeroScanned.stdout),
         `min-scanned: 0 is refused (exit ${zeroScanned.status})`);
-    actionReport(zeroScanned.env === '' && !/GUARDED/.test(zeroScanned.stdout),
-        'and refused BEFORE the gate runs — nothing in GITHUB_ENV, no matrix emitted');
+    actionReport(zeroScanned.env === ENV_SEED && !/GUARDED/.test(zeroScanned.stdout),
+        'and refused BEFORE the gate runs — nothing added to GITHUB_ENV, no matrix emitted');
 
     const junk = runStep(green, { minScanned: '1', minCells: '-1' });
     actionReport(junk.status === 1 && /min-cells must be a non-negative integer/.test(junk.stdout),
         'a non-numeric floor is refused rather than compared');
-    actionReport(junk.env === '', 'and it too is refused before anything is exported');
+    actionReport(junk.env === ENV_SEED, 'and it too is refused before anything is exported');
+
+    // The denominator's own junk arm, which nothing exercised: min-scanned and
+    // min-cells are two separate `case` statements, and a mutation to either is
+    // invisible to a suite that only ever feeds junk to the other.
+    const junkScanned = runStep(green, { minScanned: 'lots', minCells: '0' });
+    actionReport(junkScanned.status === 1 && /min-scanned must be a non-negative integer; got 'lots'/.test(junkScanned.stdout),
+        'a non-numeric min-scanned is refused too, quoting what it got');
+    actionReport(junkScanned.env === ENV_SEED, 'and it too is refused before anything is exported');
+
+    // THE EMPTY STRING IS THE FLOOR VALUE A REAL CALLER PRODUCES.
+    //
+    // GitHub does NOT enforce `required: true` on an action input: a caller that
+    // simply omits `min-scanned:` or `min-cells:` reaches this body with the
+    // variable set to the empty string. The `"" |` arm of each case is therefore
+    // the only thing standing between an omitted input and a comparison against
+    // `Number('')`, which is 0 — a vacuously green required check.
+    const omittedScanned = runStep(green, { minScanned: '', minCells: '0' });
+    actionReport(omittedScanned.status === 1 && /min-scanned must be a non-negative integer; got ''/.test(omittedScanned.stdout),
+        "an OMITTED min-scanned arrives as '' and is refused, quoting what it got");
+    actionReport(omittedScanned.env === ENV_SEED, 'and it too is refused before anything is exported');
+
+    const omittedCells = runStep(green, { minScanned: '1', minCells: '' });
+    actionReport(omittedCells.status === 1 && /min-cells must be a non-negative integer; got ''/.test(omittedCells.stdout),
+        "an OMITTED min-cells arrives as '' and is refused, quoting what it got");
+    actionReport(omittedCells.env === ENV_SEED, 'and it too is refused before anything is exported');
+
+    // THE `json:` INPUT, EXERCISED RATHER THAN DECLARED. Making the `--json` arm
+    // a no-op leaves a caller that asked for machine output holding the human
+    // matrix, and nothing else here would notice.
+    const machine = runStep(green, { json: 'true', minScanned: String(scanned), minCells: String(cells) });
+    const envelope = envelopeOf(machine.out);
+    actionReport(machine.status === 0 && envelope !== null,
+        `json: true makes the step emit the gate's machine envelope (exit ${machine.status})`);
+    actionReport(envelope !== null
+        && typeof envelope.root === 'string'
+        && typeof envelope.handlerFiles === 'number'
+        && typeof envelope.scanned === 'number'
+        && Array.isArray(envelope.cells)
+        && typeof envelope.unguarded === 'number',
+        "and it is this gate's own envelope — root, handlerFiles, scanned, cells, unguarded");
+    actionReport(envelope !== null && envelope.cells.length === cells && envelope.scanned === scanned,
+        `and it reports the same counts the gate does when driven directly (cells ${cells}, scanned ${scanned})`);
+    actionReport(envelopeOf(atFloor.out) === null,
+        'while the default json: false yields the human matrix, which parses as no envelope at all');
 }
 
 {
@@ -633,7 +799,7 @@ const exportedGate = (written) => {
     const absent = runStep(green, { actionPath: nowhere });
     actionReport(absent.status === 1 && /auth-parity-matrix\.cjs is missing from the action/.test(absent.stdout),
         `an action path with no gate fails naming the gate (exit ${absent.status})`);
-    actionReport(absent.env === '', 'and exports nothing to GITHUB_ENV');
+    actionReport(absent.env === ENV_SEED, 'and exports nothing to GITHUB_ENV');
 
     // VERBATIM, against a path that is not this repository's. A real directory,
     // so the preflight passes and the export actually happens, and its absolute
@@ -674,7 +840,7 @@ const exportedGate = (written) => {
 // A floor on the action section itself, because a harness that asserted nothing
 // would print no failures and exit 0 — the same vacuous green the gate exists
 // to make impossible.
-const ACTION_ASSERTION_FLOOR = 18;
+const ACTION_ASSERTION_FLOOR = 41;
 if (actionAssertions < ACTION_ASSERTION_FLOOR) {
     console.error(`  FAIL harness: the action-body section made ${actionAssertions} assertion(s), floor is ${ACTION_ASSERTION_FLOOR}`);
     failures += 1;
