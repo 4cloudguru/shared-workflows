@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.24.0](https://github.com/4cloudguru/shared-workflows/compare/v1.23.0...v1.24.0) (2026-09-10)
+
+
+### Features
+
+* **actions:** add the check-enforced-disciplines gate ([#73](https://github.com/4cloudguru/shared-workflows/issues/73)) ([6d7bd0a](https://github.com/4cloudguru/shared-workflows/commit/6d7bd0a2cd5f0c8e8afa14aec49c71460e48421c))
+
 ## [1.23.0](https://github.com/4cloudguru/shared-workflows/compare/v1.22.1...v1.23.0) (2026-09-09)
 
 
