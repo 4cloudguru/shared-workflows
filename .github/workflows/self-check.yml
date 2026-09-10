@@ -227,3 +227,30 @@ jobs:
       # composite action would walk `.github/actions` and report clean forever.
       - name: Shared-module pin gate self-test
         run: node tests/test-check-shared-module-pins.js
+
+      # The documented-but-unenforced-discipline gate, the third and last of the
+      # logic-only gates that lived in four places at once: a
+      # `scripts/check-enforced-disciplines.js` in each of the three ADO
+      # extensions plus the CANONICAL copy replay runs against all three. Five
+      # files rather than four, in fact -- every copy of the gate needs a copy of
+      # `lib/task-dirs.js` beside it, so the estate carried EIGHT files where it
+      # needed two. All eight were still byte-identical on the day of the move
+      # (`cmp` clean), which is what made it the cheap moment.
+      #
+      # It refuses a rule that is written down and enforced by nobody: a task.json
+      # execution handler no CI leg runs, an entry point excluded from coverage
+      # AND loaded by no test, a documented Minor-bump rule with no machine
+      # enforcing it, a Marketplace publish with the token on argv and no bounded
+      # retry. Each of the ten shapes is broken in turn and watched go red.
+      #
+      # Two things here are unlike its two siblings above. This gate FAILS on a
+      # repository with no `Tasks/` tree rather than passing quietly -- every
+      # discipline it knows is a property of a task, so an empty universe is a
+      # red flag and not a clean bill -- and it has no `--json` mode at all: its
+      # human report is a parsed contract with security-orchestration's
+      # enforced-disciplines.py. The action declares the `json` input for shape
+      # parity and REFUSES it, and both halves of that are asserted here, because
+      # forwarding a flag the script silently ignores is how a caller ends up
+      # piping a human report into `jq`.
+      - name: Enforced-disciplines gate self-test
+        run: node tests/test-check-enforced-disciplines.js

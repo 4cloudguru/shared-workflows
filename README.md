@@ -91,10 +91,12 @@ here, not that it is advisory.
 | [`release-pr-closing-keywords`](.github/actions/release-pr-closing-keywords/) | a release pull request that would close an issue the release does not complete | `terraform-state-manager-backend` |
 | [`check-docs-claims`](.github/actions/check-docs-claims/) | a document asserting a control, a file table, a referenced path or a required-check provenance the repository does not carry | not yet — the three ADO extensions still run their own `scripts/` copy |
 | [`check-shared-module-pins`](.github/actions/check-shared-module-pins/) | sibling tasks resolving different versions of one shared `@4cloudguru` package, so a released fix reaches some tasks and not others | not yet — the three ADO extensions still run their own `scripts/` copy |
+| [`check-enforced-disciplines`](.github/actions/check-enforced-disciplines/) | a rule the repository writes down and nothing asserts — a declared execution handler no CI leg runs, an entry point outside the coverage metric and loaded by no test, a documented Minor-bump rule with no machine behind it, a Marketplace publish with the token on argv and no bounded retry | not yet — the three ADO extensions still run their own `scripts/` copy |
 
-### The two gate actions ported from the extensions
+### The three gate actions ported from the extensions
 
-`check-docs-claims` and `check-shared-module-pins` arrive here from **four**
+`check-docs-claims`, `check-shared-module-pins` and
+`check-enforced-disciplines` arrive here from **four**
 places each: a `scripts/` hand-copy in `azure-pipelines-terraform`,
 `azure-pipelines-packer` and `azure-pipelines-release-docs`, plus the
 **canonical** copy that signature replay runs against all three from
@@ -111,6 +113,14 @@ nobody fixed. `check-docs-claims` is drifted right now —
 in lockstep across all four, which is exactly what makes this the cheap moment
 to move it rather than the expensive one.
 
+`check-enforced-disciplines` was in lockstep too — all four copies `cmp`-clean at
+sha256 `9eee3e46…`, and so were all four copies of the `lib/task-dirs.js` it
+imports, at `dc5b8f5b…`. That last file is why the count for this gate is
+**eight** files and not four: the script's one non-builtin import is
+`require('./lib/task-dirs.js')`, resolved relative to the *script*, so `lib/`
+ships inside the action here and a checkout carrying the gate without it is a
+could-not-run rather than a verdict. The action's preflight says so by name.
+
 **The scripts here are byte-identical to the canonical copies, deliberately.**
 Replay's `gatelib` resolves a canonical gate from
 `suite/shared-workflows/.github/actions/<gate>/<gate>.js` when it is present and
@@ -122,11 +132,26 @@ that is the consumers' and not this repository's. To change the prose, change
 the canonical copy first and re-copy. `signature-replay.yml` gained a checkout of
 this repository at `suite/shared-workflows` so that path resolves at all.
 
-Both take the repository root and nothing else, so both actions expose one
-optional `root` (default `.`) and one optional `json` flag, passed through `env`
-rather than `${{ }}` — a template substitution happens before bash parses the
-line, and a gate step is the last place to model the injection class it exists
-to refuse. Neither has a dependency; both are Node builtins only.
+All three take the repository root and nothing else, so all three actions expose
+one optional `root` (default `.`) and one optional `json` flag, passed through
+`env` rather than `${{ }}` — a template substitution happens before bash parses
+the line, and a gate step is the last place to model the injection class it
+exists to refuse. None has a dependency; all are Node builtins only.
+
+Two things about `check-enforced-disciplines` differ from its siblings, and both
+are deliberate. Its `json` input exists for shape parity and is **refused** if
+switched on: the script has no `--json` mode and ignores the flag rather than
+rejecting it, so forwarding it would hand back the human report to a caller who
+believed it had asked for machine output — and a human report piped into `jq`
+puts `jq`'s exit code where the gate's used to be. Its human report is a parsed
+contract in any case: `security-orchestration`'s
+`remediation/signatures/enforced-disciplines.py` reads the `[check]` headers and
+`OK`/`FAIL`/`EXEMPT`/`STALE-EXEMPTION` rows out of it and asserts on every run
+that its parsed row count equals the total the script prints. And it **fails on
+a repository with no `Tasks/` tree** instead of passing quietly, because every
+discipline it knows is a property of a task: an empty universe is how a
+hard-coded path fails silently, so zero rows is a red flag rather than a clean
+bill. Call it only from a repository that has tasks.
 
 ### The release-PR closing-keyword guard
 

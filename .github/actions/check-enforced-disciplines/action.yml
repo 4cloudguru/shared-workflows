@@ -1,0 +1,167 @@
+---
+name: Documented disciplines are enforced by CI, not by memory
+description: >-
+  Fail a repository that writes a rule down — a task.json execution handler, a
+  .nycrc exclude list, a CLAUDE.md bump rule, a release-pipeline requirement —
+  and leaves nothing in CI asserting it, so the rule holds only while somebody
+  remembers it.
+
+# WHY THIS IS A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW.
+#
+# Same reasoning recorded on `commit-message-check`, `breaking-change-footers`,
+# `publish-marketplace`, `check-docs-claims` and `check-shared-module-pins`: a
+# reusable workflow reports as `<caller-job-id> / <called-job-name>`, which
+# RENAMES the check. This gate runs today inside each extension's existing
+# `pr-checks` job, whose context is required on `main` in all three consumers,
+# and a required context that never appears is indistinguishable from one still
+# running. A composite action is a STEP inside the caller's own job, so the job
+# keeps its name and no branch protection moves.
+#
+# WHAT THIS REPLACES. `scripts/check-enforced-disciplines.js` hand-copied into
+# azure-pipelines-terraform, azure-pipelines-packer and
+# azure-pipelines-release-docs, plus the CANONICAL copy that signature replay
+# runs against all three from security-orchestration's `remediation/gates/`.
+# FOUR copies of one 501-line script, and a fifth file behind it: all four
+# copies `require('./lib/task-dirs.js')`, so the estate actually carried EIGHT
+# files where it needed two. On 2026-09-09 all eight were still byte-identical
+# (`cmp` clean, sha256 `9eee3e46…` for the gate and `dc5b8f5b…` for the lib),
+# which is precisely what makes this the cheap moment to move it rather than
+# the expensive one — its sibling `check-docs-claims` was lifted on the same
+# day already three-way drifted, with a fix that had landed in a hand-copy and
+# never reached canonical.
+#
+# THE SCRIPT HERE IS BYTE-IDENTICAL TO THE CANONICAL COPY, DELIBERATELY.
+# `check-enforced-disciplines.js` and `lib/task-dirs.js` below are
+# `remediation/gates/check-enforced-disciplines.js` and
+# `remediation/gates/lib/task-dirs.js` at security-orchestration@origin/main,
+# copied and verified with `cmp` — comment text included, and the
+# `Usage: node scripts/check-enforced-disciplines.js` line included even though
+# the path it names is the consumers' and not this one. Replay's gatelib
+# resolves a canonical gate from
+# `suite/shared-workflows/.github/actions/<gate>/<gate>.js` when it is present
+# and COMPARES it against the mirror it finds; a re-worded comment is a
+# difference to that comparison exactly as a re-worded condition is. Editing
+# this file to make its prose accurate is how the identity gets broken. Move
+# the wording in the canonical copy first, then re-copy.
+#
+# `lib/` TRAVELS WITH THE GATE, AND HAS TO. The script's only non-core import
+# is `require('./lib/task-dirs.js')`, resolved relative to the SCRIPT, not to
+# the root it is analysing. That is one of the two blockers that used to keep
+# this gate per-repository (the other — a walk boundary taken from the script's
+# own location rather than from the root argument — is already fixed upstream);
+# shipping the gate without `lib/` would make every invocation die in module
+# resolution, which is a could-not-run, not a verdict.
+#
+# WHAT IT CHECKS. Six disciplines, enumerated from disk on every run so that
+# adding a task adds its rows automatically: the declared execution target is
+# loaded by some test; that target is inside the coverage metric rather than
+# carved out of it; every declared `NodeNN` execution handler is actually
+# exercised by a test-workflow job; a task whose security value IS artifact
+# verification runs its REAL suite (not the load-only smoke check) under every
+# fallback handler it advertises; the Minor-bump rule is machine-enforced at
+# all four layers (script, auto-bump workflow, PR merge gate, tag-time guard);
+# and the Marketplace publish goes through a bounded retry with the minted
+# token off argv. Its own header is the authority on each; read it there rather
+# than trusting this summary.
+#
+# IT IS DELIBERATELY NOT SAFE ON A REPOSITORY WITH NO Tasks/ TREE, and this is
+# the one place it differs from its two siblings. A repository with no task
+# directories exits 1 saying `the signature would trivially pass over an empty
+# universe` — because every discipline here is a property OF a task, and a gate
+# that enumerated nothing would print the same green as a gate that enumerated
+# everything and approved it. Call this only from a repository that has tasks.
+
+inputs:
+  root:
+    description: >-
+      Repository root to check, relative to the calling job's working directory.
+      Defaults to `.`, which is the checkout GitHub already put there. Passed to
+      the script as its positional argument, which is how the gate has always
+      taken a root.
+    required: false
+    default: "."
+  json:
+    description: >-
+      Accepted for shape parity with `check-docs-claims` and
+      `check-shared-module-pins` and REFUSED if switched on: this gate has no
+      `--json` mode. Leave it `false` (the default). See the note on the step
+      below for why asking is an error here rather than a no-op.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Documented disciplines are enforced, not remembered
+      shell: bash
+      # EVERY INPUT ARRIVES THROUGH env, none through ${{ }} inside the script.
+      # A `${{ inputs.root }}` spliced into a `run:` body is an expression
+      # substituted before bash sees the line, so a caller-supplied value
+      # carrying a quote or a semicolon becomes shell rather than an argument.
+      # That is zizmor's template-injection audit, which is a required check on
+      # this repository — and a gate step is the last place to model the class
+      # it exists to refuse. Same shape as `osv-scan` and `publish-marketplace`.
+      env:
+        ROOT: ${{ inputs.root }}
+        JSON: ${{ inputs.json }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+
+        # `github.action_path` is the whole mechanism that pins the
+        # implementation to the SHA on the caller's `uses:` line. A failure
+        # here should say that, rather than surfacing as a node stack trace.
+        [ -f "$ACTION_PATH/check-enforced-disciplines.js" ] || {
+          echo "::error::check-enforced-disciplines.js is missing from the action at '$ACTION_PATH'." >&2
+          exit 1
+        }
+
+        # The gate's only import, and the reason a missing lib/ is worth its own
+        # message: node would otherwise report `Cannot find module` against a
+        # path inside the action, which reads like a defect in the gate rather
+        # than an incomplete checkout of this action.
+        [ -f "$ACTION_PATH/lib/task-dirs.js" ] || {
+          echo "::error::lib/task-dirs.js is missing from the action at '$ACTION_PATH'; the gate requires it." >&2
+          exit 1
+        }
+
+        # WHY `json: true` IS AN ERROR AND NOT A FLAG.
+        #
+        # `check-docs-claims` and `check-shared-module-pins` both filter
+        # `--json` out of argv and switch their reporter. This gate does
+        # neither: it reads `process.argv[2]` as the root and IGNORES every
+        # other argument, so appending `--json` here would silently produce the
+        # human report while the caller believed it had asked for machine
+        # output — and anything piping that into `jq` would then have `jq`'s
+        # exit code replace the gate's, which is how a red gate goes green.
+        #
+        # Adding a `--json` mode is not a change that can be made in this file.
+        # The script is byte-identical to canonical on purpose (replay's gatelib
+        # compares them), and its HUMAN report is a parsed contract:
+        # security-orchestration's `remediation/signatures/enforced-disciplines.py`
+        # reads the `[check]` headers and `OK/FAIL/EXEMPT/STALE-EXEMPTION` rows
+        # out of it and asserts two invariants on every run — that its parsed row
+        # count equals the total the script prints, and that the exit code agrees
+        # with whether it found a site. So the input stays declared, for parity
+        # and so that a caller who assumed it works is TOLD, and it refuses.
+        case "$JSON" in
+          "" | false | FALSE | False | 0 | no) ;;
+          *)
+            echo "::error::check-enforced-disciplines has no --json mode; it emits the human report that security-orchestration's enforced-disciplines.py parses. Leave the 'json' input at 'false'." >&2
+            exit 1
+            ;;
+        esac
+
+        # Built as an array rather than an unquoted string, so a root with a
+        # space in it stays one argument. The gate takes the root positionally
+        # and takes nothing else.
+        args=("$ROOT")
+
+        # NO `|| true`, NO pipe, NO `set +e`. The gate's exit code IS the step's
+        # verdict — 1 covers both "a discipline is unenforced" and "there was no
+        # universe to enumerate", and the estate's own lesson is that a
+        # could-not-run swallowed into a pass is the worst of the answers
+        # available. Anything that captured this status would have to re-raise
+        # it, so nothing captures it. A pipe would be worse than a capture: a
+        # filter on the end of a command REPLACES its exit code.
+        node "$ACTION_PATH/check-enforced-disciplines.js" "${args[@]}"
