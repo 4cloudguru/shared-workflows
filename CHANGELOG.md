@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.26.0](https://github.com/4cloudguru/shared-workflows/compare/v1.25.0...v1.26.0) (2026-09-10)
+
+
+### Features
+
+* **actions:** add the check-proxy-parity, check-artifact-trust and auth-parity-matrix gate composites ([#79](https://github.com/4cloudguru/shared-workflows/issues/79)) ([43e66d6](https://github.com/4cloudguru/shared-workflows/commit/43e66d61b1508b4e5fd2722f36c7c28391925519))
+
+
+### Bug Fixes
+
+* **actions:** keep expressions out of the gate composites' input descriptions ([#81](https://github.com/4cloudguru/shared-workflows/issues/81)) ([a344314](https://github.com/4cloudguru/shared-workflows/commit/a3443142fe8039b5520d2c1013cd659f66e23225))
+
 ## [1.25.0](https://github.com/4cloudguru/shared-workflows/compare/v1.24.0...v1.25.0) (2026-09-10)
 
 
