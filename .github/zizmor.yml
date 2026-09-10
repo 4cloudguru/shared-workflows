@@ -3,6 +3,19 @@
 # An entry here is an ACCEPTED finding, not a silenced one: it names the rule,
 # the file, and why the obvious remediation is wrong. Anything NOT listed fails
 # the job, so a new finding of any kind is still caught.
+# ONE CLASS OF ACCEPTED FINDING IS NOT LISTED BELOW, AND ON PURPOSE.
+#
+# `github-env` fires on the three gate composites that export their own
+# `github.action_path` into `$GITHUB_ENV`
+# (.github/actions/check-proxy-parity, check-artifact-trust and
+# auth-parity-matrix). Each carries an inline `# zizmor: ignore[github-env]`
+# on its `run: |` line with the reasoning beside it. It is NOT an entry here
+# because the `ignore:` lists in this file match on BASENAME only -- measured
+# against zizmor 1.30.0, the version workflow-security.yml pins: a full path
+# entry matches nothing, so the only entry that would work reads `action.yml`
+# and would blind that audit for every composite in this repository, present
+# and future. A per-step marker at the site is the narrower instrument.
+
 rules:
   self-repository:
     ignore:

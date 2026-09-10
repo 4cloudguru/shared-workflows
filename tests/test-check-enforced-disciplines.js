@@ -502,13 +502,48 @@ try {
         report(libless.status !== 0 && /lib\/task-dirs\.js is missing from the action/.test(libless.stdout),
             'an action shipped without lib/task-dirs.js fails naming the lib, not with a module-resolution trace');
     }
+
+    {
+        // THE CALLER'S OWN COPY OF lib/task-dirs.js IS COMPARED TOO.
+        //
+        // `scripts/check-enforced-disciplines.js` leaves the three consumers in
+        // this release; `scripts/lib/task-dirs.js` cannot, because four to six
+        // non-gate scripts per repository import it and one of them,
+        // copy-build.js, decides what ships inside the signed .vsix. Replay's
+        // gatelib compares a consumer's ENTRY POINT against canonical and
+        // nothing else, so the moment the entry point leaves, that lib is
+        // compared by nobody. The action's step closes the hole, and this pair
+        // of cases is the proof: a caller carrying the identical file passes,
+        // and one byte of drift is a red step naming the file.
+        //
+        // Derived from the file's presence, with no input: the ABSENT case is
+        // every fixture above, all of which still pass, which is what says the
+        // check is silent on a tree that does not carry the file at all.
+        const identical = makeCompliantRepo('task-dirs-identical');
+        write(identical, 'scripts/lib/task-dirs.js', fs.readFileSync(LIB, 'utf8'));
+        report(runStep(identical).status === 0,
+            "a caller whose scripts/lib/task-dirs.js is identical to the action's copy passes");
+
+        const drifted = makeCompliantRepo('task-dirs-drifted');
+        // ONE byte, and a semantically inert one: the point is that the
+        // comparison is over bytes, not over behaviour. A drift that changed
+        // discoverTaskDirs would be caught by other things; a drift that only
+        // looks harmless is the one nothing else in the estate can see.
+        write(drifted, 'scripts/lib/task-dirs.js', `${fs.readFileSync(LIB, 'utf8')} `);
+        const bad = runStep(drifted);
+        report(bad.status === 1, 'one byte of drift in the caller\'s copy fails the step');
+        report(/scripts\/lib\/task-dirs\.js differs from this action's copy/.test(bad.stdout),
+            'and the error names the file and says where to re-sync it from');
+        report(!/\[execution-handler-exercised\]/.test(bad.stdout),
+            'and it is refused before the gate runs, so the drift is not buried under a clean report');
+    }
 } finally {
     fs.rmSync(scratchDir, { recursive: true, force: true });
 }
 
 // A floor, because a harness that asserted nothing would print no failures and
 // exit 0 -- the same vacuous green this gate exists to make impossible.
-const ASSERTION_FLOOR = 26;
+const ASSERTION_FLOOR = 31;
 if (assertions < ASSERTION_FLOOR) {
     console.error(`  FAIL harness: made ${assertions} assertion(s), floor is ${ASSERTION_FLOOR}`);
     failures += 1;

@@ -1,0 +1,189 @@
+---
+name: Outbound calls honour the agent proxy
+description: >-
+  Fail a repository that issues an outbound HTTP request through a transport
+  primitive which does not consult the ADO agent's configured proxy, in a repo
+  where sibling transports do.
+
+# WHY A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW.
+#
+# The same record its five siblings carry: a reusable workflow reports as
+# `<caller-job-id> / <called-job-name>`, which RENAMES the check. This gate runs
+# inside `Check Shared Module Provenance` (azure-pipelines-packer),
+# `Check Shared Module Parity` (azure-pipelines-terraform) and
+# `Check Version Consistency` (azure-pipelines-release-docs), all required
+# contexts on `main`, and once the consumers adopt this action it also runs
+# inside their `Build and Test …` matrix jobs. A composite action is a STEP in
+# the caller's own job, so no job is renamed and no branch protection moves.
+#
+# WHY IT ALSO EXPORTS ITS OWN PATH.
+#
+# This gate is not only a CI step: two task L0 suites SPAWN it under `npm test`
+# and assert its WHOLE enumerated site set —
+# `Tasks/PackerTask/PackerTaskV1/Tests/ProxyParityL0.ts:230` and
+# `Tasks/TerraformTask/TerraformTaskV5/Tests/ProxyParityL0.ts:315` on their
+# origin/mains today, each a `deepStrictEqual(seen, SITE_ROWS)` over
+# `rel:fn:sink`. Once a consumer stops carrying a copy under `scripts/`, those
+# suites need the path of the gate the caller's `uses:` pin named — and the
+# runner is the only thing that knows it. So this step writes
+# `SHARED_GATE_CHECK_PROXY_PARITY=<github.action_path>` into `$GITHUB_ENV`.
+#
+# `$ACTION_PATH` is written VERBATIM: no `dirname`, no suffix, no
+# concatenation. On windows-2025 the value is
+# `D:\a\_actions\4cloudguru\shared-workflows\<sha>\.github\actions\check-proxy-parity`,
+# and in Git Bash `dirname` returns `.` for that string — it contains no `/`,
+# so the answer is a directory that EXISTS, silently wrong, on one OS only, in
+# a required check. `${AP%/*}` returns the input unchanged for the same reason.
+# Every consumer of this variable is node, whose `path` module is correct for
+# the platform it runs on, so the arithmetic belongs there and nowhere else.
+# That is the whole reason each gate exports its OWN directory rather than one
+# action computing a shared parent for all of them — and it is also what keeps
+# `gatelib.composite_pin()` able to see a true `uses:` line naming THIS action.
+#
+# WHY THE FLOOR INPUT EXISTS AND WHY IT IS REQUIRED.
+#
+# The gate exits 0 over a repository it enumerated nothing in. Inside `npm test`
+# that is caught by the suite's own `deepStrictEqual(seen, SITE_ROWS)`; as a
+# bare CI step nothing would catch it, and a green step over an empty universe
+# is the exact shape this estate refuses. `min-sites` is therefore REQUIRED with
+# no default: a caller must have measured. This gate's `--json` carries no
+# `scanned` denominator — the envelope is `sites`, `failures`, `staleFloors`,
+# `estateFloorLag` and nothing else — which is why the floor here is on the
+# ENUMERATION and is refused below 1, rather than on a denominator. Adding a
+# denominator is a change to the CANONICAL gate, not to this file.
+#
+# The floor may only ever turn a green into a red. It runs AFTER the verdict
+# run, so a finding aborts before the floor line executes.
+#
+# THE SCRIPT HERE IS BYTE-IDENTICAL TO security-orchestration's
+# `remediation/gates/check-proxy-parity.js` (sha256 `e3d4f2dc37b2…`, md5
+# `44ef7691a056…`), and `lib/` TRAVELS WITH IT:
+# `require('./lib/package-delegation.js')` resolves against the SCRIPT, not
+# against the analysed root, so the action carries its own copy (sha256
+# `6ef4c36d849e…`) — a second copy of the same lib as `check-artifact-trust`'s,
+# deliberately, because `github.action_path` is per action. Replay's `gatelib`
+# compares BOTH files and `SHARED_ACTION_ASSETS` records the pair, so an action
+# shipped without `lib/` is exit 2 in every replay host at once. Re-wording a
+# comment in the script here is drift: move the wording in canonical first,
+# then re-copy and `cmp`.
+
+inputs:
+  root:
+    description: >-
+      Repository root to check. Defaults to `.`. A caller in a job that sets
+      `defaults.run.working-directory` must pass `${{ github.workspace }}`
+      explicitly — a composite action's steps do not inherit that default.
+    required: false
+    default: "."
+  min-sites:
+    description: >-
+      The lowest number of outbound call sites this repository can honestly
+      enumerate. Required, and refused below 1: a gate that found nothing must
+      not report success. Measured with
+      `node check-proxy-parity.js <root> --json`; record the date beside the
+      value in the caller and move it in the same pull request that legitimately
+      moves the count.
+    required: true
+  json:
+    description: Emit the machine report instead of the human one.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Outbound proxy parity
+      shell: bash
+      # EVERY INPUT ARRIVES THROUGH env, none through ${{ }} inside the script:
+      # a `${{ inputs.root }}` spliced into a `run:` body is substituted before
+      # bash sees the line, so a value carrying a quote or a semicolon becomes
+      # shell rather than an argument. That is zizmor's template-injection
+      # audit, a required check on this repository — and a gate step is the last
+      # place to model the class it exists to refuse.
+      env:
+        ROOT: ${{ inputs.root }}
+        JSON: ${{ inputs.json }}
+        MIN_SITES: ${{ inputs.min-sites }}
+        ACTION_PATH: ${{ github.action_path }}
+      # ZIZMOR `github-env` IS ACCEPTED HERE, INLINE AND BY NAME.
+      #
+      # That audit fires on any write to `$GITHUB_ENV` from a `run:` block,
+      # because an attacker-controlled value written there becomes an
+      # environment variable in every later step of the caller's job. It is
+      # right to ask, and the answer here is measured rather than asserted: the
+      # only thing this body writes is `github.action_path`, which the RUNNER
+      # produces when it materialises this action at the caller's `uses:` SHA.
+      # No caller input reaches the line — `ROOT`, `JSON` and the floors are
+      # read but never written — and the variable name is a fixed literal. The
+      # export is also the whole point of the action: two task L0 suites resolve
+      # the gate from it, and a step output would move the value through a
+      # caller-written `${{ steps.<id>.outputs… }}` expression, which is weaker,
+      # not stronger.
+      #
+      # Suppressed INLINE rather than in `.github/zizmor.yml`, deliberately:
+      # that file's `ignore:` entries match on BASENAME only (measured with
+      # zizmor 1.30.0, the pinned version — a path entry matches nothing), so a
+      # `github-env` entry there would read `action.yml` and blind this audit
+      # for every composite in this repository, present and future. This marker
+      # covers exactly one step in exactly one file.
+      run: | # zizmor: ignore[github-env]
+        set -euo pipefail
+
+        # `github.action_path` is the whole mechanism that pins the
+        # implementation to the SHA on the caller's `uses:` line. A failure
+        # here should say that, rather than surfacing as a node stack trace.
+        [ -f "$ACTION_PATH/check-proxy-parity.js" ] || {
+          echo "::error::check-proxy-parity.js is missing from the action at '$ACTION_PATH'." >&2
+          exit 1
+        }
+        [ -f "$ACTION_PATH/lib/package-delegation.js" ] || {
+          echo "::error::lib/package-delegation.js is missing from the action at '$ACTION_PATH'; the gate requires it and would die in module resolution, which exits 1 — the same code this gate uses for a finding." >&2
+          exit 1
+        }
+
+        # Refuse an unusable floor BEFORE anything else, so a typo is a message
+        # and not a silently permissive comparison.
+        case "$MIN_SITES" in
+          "" | *[!0-9]*)
+            echo "::error::min-sites must be a non-negative integer; got '$MIN_SITES'." >&2
+            exit 1
+            ;;
+        esac
+        [ "$MIN_SITES" -ge 1 ] || {
+          echo "::error::min-sites is '$MIN_SITES'. This gate has no 'scanned' denominator, so a floor of zero cannot tell 'looked and found none' from 'looked nowhere'." >&2
+          exit 1
+        }
+
+        # Written AFTER the completeness checks, so the variable is never set
+        # to a directory the gate could not have started from. `echo` is safe:
+        # a runner action path contains no newline, and the heredoc form would
+        # only add a delimiter to get wrong.
+        echo "SHARED_GATE_CHECK_PROXY_PARITY=$ACTION_PATH" >> "$GITHUB_ENV"
+
+        args=("$ROOT")
+        case "$JSON" in
+          "" | false | FALSE | False | 0 | no) ;;
+          *) args+=("--json") ;;
+        esac
+
+        # THE VERDICT RUN. No `|| true`, no pipe, no capture: the gate's exit
+        # code IS the step's verdict, and a filter on the end of a command
+        # replaces its exit code. A finding aborts here, before the floor below
+        # — which is the intended order: the floor can only ever turn a green
+        # into a red, never a red into a green.
+        node "$ACTION_PATH/check-proxy-parity.js" "${args[@]}"
+
+        # THE FLOOR. A second, redirected run (a redirect is not a pipe and
+        # does not replace an exit code) so the caller's chosen report above is
+        # untouched and machine-readable output exists to compare.
+        node "$ACTION_PATH/check-proxy-parity.js" "$ROOT" --json > "$RUNNER_TEMP/check-proxy-parity.json"
+        MIN_SITES="$MIN_SITES" node -e '
+          const report = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+          const sites = (report.sites || []).length;
+          const floor = Number(process.env.MIN_SITES);
+          if (!(sites >= floor)) {
+            console.error(`::error::check-proxy-parity enumerated ${sites} site(s), below the declared floor of ${floor}. Either the gate stopped seeing this repository, or the floor is stale — decide which, and move the number in the same change that moved the count.`);
+            process.exit(1);
+          }
+          console.log(`check-proxy-parity floor met: sites=${sites} >= ${floor}`);
+        ' "$RUNNER_TEMP/check-proxy-parity.json"

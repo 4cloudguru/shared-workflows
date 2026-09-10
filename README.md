@@ -89,14 +89,18 @@ here, not that it is advisory.
 | --- | --- | --- |
 | [`breaking-change-footers`](.github/actions/breaking-change-footers/) | a squash that would drop a second breaking-change declaration, or prose release-please reads as one nobody wrote | `azure-pipelines-release-docs` |
 | [`release-pr-closing-keywords`](.github/actions/release-pr-closing-keywords/) | a release pull request that would close an issue the release does not complete | `terraform-state-manager-backend` |
-| [`check-docs-claims`](.github/actions/check-docs-claims/) | a document asserting a control, a file table, a referenced path or a required-check provenance the repository does not carry | not yet — the three ADO extensions still run their own `scripts/` copy |
-| [`check-shared-module-pins`](.github/actions/check-shared-module-pins/) | sibling tasks resolving different versions of one shared `@4cloudguru` package, so a released fix reaches some tasks and not others | not yet — the three ADO extensions still run their own `scripts/` copy |
-| [`check-enforced-disciplines`](.github/actions/check-enforced-disciplines/) | a rule the repository writes down and nothing asserts — a declared execution handler no CI leg runs, an entry point outside the coverage metric and loaded by no test, a documented Minor-bump rule with no machine behind it, a Marketplace publish with the token on argv and no bounded retry | not yet — the three ADO extensions still run their own `scripts/` copy |
+| [`check-docs-claims`](.github/actions/check-docs-claims/) | a document asserting a control, a file table, a referenced path or a required-check provenance the repository does not carry | `azure-pipelines-packer` (`Check Shared Module Provenance`), `azure-pipelines-terraform` (`Check Shared Module Parity`), `azure-pipelines-release-docs` (`Check Documented Claims`) — all three since 2026-09-09, at `v1.23.0` |
+| [`check-shared-module-pins`](.github/actions/check-shared-module-pins/) | sibling tasks resolving different versions of one shared `@4cloudguru` package, so a released fix reaches some tasks and not others | `azure-pipelines-packer` (`Check Shared Module Provenance`), `azure-pipelines-terraform` (`Check Shared Module Parity`), `azure-pipelines-release-docs` (`Check Version Consistency`) — all three since 2026-09-09, at `v1.23.0` |
+| [`check-enforced-disciplines`](.github/actions/check-enforced-disciplines/) | a rule the repository writes down and nothing asserts — a declared execution handler no CI leg runs, an entry point outside the coverage metric and loaded by no test, a documented Minor-bump rule with no machine behind it, a Marketplace publish with the token on argv and no bounded retry | not yet — released in `v1.24.0` and pinned by nobody; the three ADO extensions still run their own `scripts/` copy, and the consumer pull requests of this phase adopt it |
+| [`check-proxy-parity`](.github/actions/check-proxy-parity/) | an outbound HTTP call made through a transport primitive that does not consult the ADO agent's configured proxy, in a repository whose sibling transports do | not yet — the consumer pull requests of this phase adopt it, in the gate jobs and in the `Build and Test …` matrix jobs whose task suites spawn the gate |
+| [`check-artifact-trust`](.github/actions/check-artifact-trust/) | a downloaded tool installed, or a cached one admitted, without verification — an unchecked checksum, a signature nobody validates, a cache entry re-used with no re-verification, a delegated verifier pinned below the floor that decides which implementation resolves | not yet — the consumer pull requests of this phase adopt it |
+| [`auth-parity-matrix`](.github/actions/auth-parity-matrix/) | a provider-credential branch that does not fail closed the way its siblings do — a raw service-connection field read with no validating accessor, a credential env var left set by a branch that did not populate it, a secret delivered to the tool undeclared, a constant role-session-name | not yet — the consumer pull requests of this phase adopt it |
 
-### The three gate actions ported from the extensions
+### The gate actions ported from the extensions
 
-`check-docs-claims`, `check-shared-module-pins` and
-`check-enforced-disciplines` arrive here from **four**
+Six now, in two waves. The first three — `check-docs-claims`,
+`check-shared-module-pins` and
+`check-enforced-disciplines` — arrive here from **four**
 places each: a `scripts/` hand-copy in `azure-pipelines-terraform`,
 `azure-pipelines-packer` and `azure-pipelines-release-docs`, plus the
 **canonical** copy that signature replay runs against all three from
@@ -152,6 +156,51 @@ a repository with no `Tasks/` tree** instead of passing quietly, because every
 discipline it knows is a property of a task: an empty universe is how a
 hard-coded path fails silently, so zero rows is a red flag rather than a clean
 bill. Call it only from a repository that has tasks.
+
+#### The second wave: `check-proxy-parity`, `check-artifact-trust`, `auth-parity-matrix`
+
+Same four places each, same byte-identity rule, and every copy still `cmp`-clean
+against canonical on the day of the move — which is what makes this the cheap
+moment rather than the expensive one. Two things about them are new.
+
+**They ship an asset, and each ships its own.** `check-proxy-parity.js` and
+`check-artifact-trust.js` both `require('./lib/package-delegation.js')`, resolved
+against the *script*, so the file travels inside each action — two copies of one
+lib, deliberately. `github.action_path` is per action, and an action reaching
+across to a sibling action's directory would resolve to whatever ref that
+sibling happened to be checked out at. Replay's `gatelib` records the pair in
+`SHARED_ACTION_ASSETS` and compares both files, so an action published without
+its `lib/` is a could-not-run in every replay host at once, not a quiet verdict.
+`auth-parity-matrix.cjs` requires `node:fs` and `node:path` and nothing else —
+measured, not assumed — so it ships alone and has no assets entry.
+
+**They export their own path, and take a floor.** These three are not only CI
+steps: task L0 suites in `azure-pipelines-packer` and `azure-pipelines-terraform`
+*spawn* them under `npm test` and assert the whole enumerated set, and one of
+those call sites points the gate at a fixture directory built moments earlier.
+So each step writes `SHARED_GATE_<ACTION>=<github.action_path>` into
+`$GITHUB_ENV`, and the suites resolve the gate from that — which makes the gate
+they run the caller's pinned SHA by construction, since nothing in the consumer
+chooses a path. The value is written **verbatim**: no `dirname`, no suffix, no
+concatenation. On windows-2025 that path is a Windows path, and in Git Bash
+`dirname` returns `.` for it — a directory that exists, on one OS only, inside a
+required check — while `${AP%/*}` returns the input unchanged. Both are measured
+in the self-tests rather than asserted in prose. Node's `path` module is correct
+for the platform it runs on, so the arithmetic belongs there and nowhere else.
+
+The floors are the other half. All three gates exit 0 over a repository they
+enumerated nothing in, which inside `npm test` is caught by the suite's own
+inventory assertion and as a bare CI step is caught by nothing. So the floor
+inputs are **required, with no default**: a caller must have measured.
+`check-artifact-trust` and `auth-parity-matrix` report a denominator (`scanned`,
+the count of source files read), so each takes a `min-scanned` refused below 1
+*and* an enumeration floor (`min-sites` / `min-cells`) that may honestly be `0`
+— a repository that looked and found none says so deliberately.
+`check-proxy-parity`'s `--json` carries no denominator, so its single
+`min-sites` is refused below 1; adding a denominator is a change to the
+canonical gate, not to the action. Every floor runs **after** the gate's own
+verdict run, so a finding aborts first: inline logic in an `action.yml` may turn
+a green into a red and never the other way round.
 
 ### The release-PR closing-keyword guard
 

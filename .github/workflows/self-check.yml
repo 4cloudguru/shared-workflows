@@ -254,3 +254,53 @@ jobs:
       # piping a human report into `jq`.
       - name: Enforced-disciplines gate self-test
         run: node tests/test-check-enforced-disciplines.js
+
+      # The outbound-proxy-parity gate, the first of three that move here
+      # carrying more than a script. It has been wrong TWICE -- once reporting
+      # "no outbound HTTP call sites found" for a task that demonstrably makes
+      # them, once attributing a locally defined function to a package because
+      # the two share a name -- and both failures changed the inventory
+      # silently, which is the one thing a coverage gate must not do. The suite
+      # is security-orchestration's canonical `test-check-proxy-parity.js` with
+      # one line changed (the path the gate resolves from), so a case rewritten
+      # here rather than there is drift in the same way a re-worded comment in
+      # the gate is.
+      #
+      # It also drives the ACTION: the extracted `run:` body is executed under
+      # bash against a temp `$GITHUB_ENV`, because this composite does something
+      # its three predecessors do not -- it exports its own `github.action_path`
+      # for two task L0 suites to spawn the gate from. That value is asserted
+      # VERBATIM, including from a relocated action directory, since `dirname`
+      # on a windows-2025 action path returns `.` (measured here, in bash) and
+      # would be a silently wrong answer on one OS only, inside a required
+      # check.
+      - name: Proxy-parity gate self-test
+        run: node tests/test-check-proxy-parity.js
+
+      # The artifact-trust gate. Same port, same action-body section, plus one
+      # suite that had nowhere else to go: azure-pipelines-terraform's
+      # TerraformInstallerV1 ArtifactTrustL0 describe D builds four synthetic
+      # files in a temp directory and points this gate at them to prove that
+      # resolving reader/writer names across an import did not stop it catching
+      # a genuinely blind cache admission. Those fixtures assert nothing about
+      # that repository -- they are the gate's own ladder -- so they belong
+      # beside the gate, which is here. They stay in the consumer too: over
+      # there they are the only live proof that what the composite exports is a
+      # BINARY the suite can point anywhere and not a report of the consumer's
+      # own tree.
+      - name: Artifact-trust gate self-test
+        run: node tests/test-check-artifact-trust.js
+
+      # The credential fail-closed matrix. This gate is spawned under `npm test`
+      # by two task L0 suites in each of the two extensions that authenticate to
+      # a provider, and every one of those callers asserts on its verdicts --
+      # and until this month nothing had ever watched it be wrong. Its suite was
+      # written canonically in security-orchestration first, precisely so the
+      # copy here has a parent to be `cp`'d from rather than a suite invented
+      # beside the copy, and it runs here for the first time in any CI. Every
+      # red case is the one clean fixture minus exactly one named guard, and the
+      # reported totals are asserted over a fixture whose true totals are not
+      # zero -- a gate hard-wiring `unguarded: 0` agrees with every measurement
+      # taken over an all-guarded tree.
+      - name: Auth-parity-matrix gate self-test
+        run: node tests/test-auth-parity-matrix.js
