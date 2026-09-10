@@ -16,7 +16,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { problems, zizmorPins, zizmorActionPins, actionlintPin } = require('../scripts/check-tooling-pins.cjs');
+const { problems, zizmorPins, zizmorActionPins, actionlintPin, osvScannerPin } = require('../scripts/check-tooling-pins.cjs');
 const REAL = path.resolve(__dirname, '..');
 
 // DERIVED FROM THE TREE, never written down here.
@@ -35,11 +35,13 @@ const CURRENT = {
     actionlint: actionlintPin(REAL).urlVersion,
     zizmor: (zizmorPins(REAL)[0] || {}).version,
 };
-if (!CURRENT.actionlint || !CURRENT.zizmor) {
+const OSV = osvScannerPin(REAL);
+if (!CURRENT.actionlint || !CURRENT.zizmor || !OSV.digest) {
     // The readers under test are how this file learns what the tree pins, so a
     // reader that stopped resolving would otherwise hand every case below the
     // string "undefined" and let them pass against nothing.
-    console.error(`  FAIL harness: could not read the tree's own pins (actionlint=${CURRENT.actionlint}, zizmor=${CURRENT.zizmor})`);
+    console.error(`  FAIL harness: could not read the tree's own pins (actionlint=${CURRENT.actionlint}, ` +
+        `zizmor=${CURRENT.zizmor}, osv-scanner=${OSV.ref || 'none'})`);
     process.exit(1);
 }
 
@@ -55,7 +57,15 @@ const report = (ok, msg) => {
     else { console.error(`  FAIL ${msg}`); failures += 1; }
 };
 
-/** A copy of the two real workflow files, optionally rewritten. */
+/**
+ * A copy of the real files every pin lives in, optionally rewritten.
+ *
+ * The osv-scan action.yml is copied too, and it is not optional: `problems`
+ * reports an unresolvable osv-scanner pin as a finding, so a temp tree without
+ * it would hand EVERY case below a spurious extra finding. The cases assert with
+ * `.some()` rather than on a count, so they would still pass -- while quietly
+ * testing a tree that is broken in a second, unrelated way.
+ */
 function tree(edit = (s) => s) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tooling-pins-'));
     fs.mkdirSync(path.join(root, '.github', 'workflows'), { recursive: true });
@@ -63,6 +73,10 @@ function tree(edit = (s) => s) {
         const src = path.join(REAL, '.github', 'workflows', f);
         fs.writeFileSync(path.join(root, '.github', 'workflows', f), edit(fs.readFileSync(src, 'utf8'), f));
     }
+    fs.mkdirSync(path.join(root, '.github', 'actions', 'osv-scan'), { recursive: true });
+    const osvSrc = path.join(REAL, '.github', 'actions', 'osv-scan', 'action.yml');
+    fs.writeFileSync(path.join(root, '.github', 'actions', 'osv-scan', 'action.yml'),
+        edit(fs.readFileSync(osvSrc, 'utf8'), 'osv-scan/action.yml'));
     return root;
 }
 
@@ -215,6 +229,75 @@ function tree(edit = (s) => s) {
     const found = problems(root, { actionlint: nextActionlint, zizmor: CURRENT.zizmor });
     report(found.some((f) => /internally inconsistent/.test(f)),
         `a URL bumped without its checksum is a finding`);
+}
+
+// ── the osv-scanner image pin (terraform-registry-backend#894)
+//
+// WHY THIS BLOCK EXISTS. This pin lived in eight consumers and nothing watched
+// it; one repo sat two releases behind for months and the only reason anyone
+// found out was a manual sweep. The osv-scan action consolidated the eight
+// copies into one, which is what makes it watchable -- and an unwatched pin in
+// one place rots exactly as quietly as an unwatched pin in eight.
+{
+    report(!!OSV.ref, `the osv-scanner image pin is found (${OSV.repo}:${OSV.tag})`);
+    report(!!OSV.digest, `the osv-scanner pin carries a digest (${(OSV.digest || '').slice(0, 19)}…)`);
+
+    // Agreeing upstream: the tag is latest and resolves to the pinned digest.
+    const agreeing = { ...CURRENT, osvTag: OSV.tag, osvTagDigest: OSV.digest };
+    report(problems(REAL, agreeing).length === 0,
+        `the real tree is clean when upstream agrees with the osv-scanner pin`);
+
+    // THE ANCHORING TRAP. The action's header prose names
+    // ghcr.io/google/osv-scanner-action:<tag> WITHOUT a digest, so a reader
+    // matching the image NAME would resolve the comment, report a pin that is
+    // not the pin, and read as clean. Delete the input default and the prose
+    // stays: the reader must find nothing.
+    const proseOnly = tree((s, f) => (f === 'osv-scan/action.yml'
+        ? s.replace(/^ {4}default: "ghcr\.io\/[^"]+"$/m, '    required: false')
+        : s));
+    report(osvScannerPin(proseOnly).ref === null,
+        `the header prose naming the image is NOT mistaken for the pin`);
+    report(
+        problems(proseOnly, agreeing).some((f) => /no osv-scanner image pin found/.test(f)),
+        `a tree where the osv-scanner pin cannot be resolved is a finding, not a pass`,
+    );
+
+    // A tag with no digest: the pin still resolves, and is still wrong.
+    const tagOnly = tree((s, f) => (f === 'osv-scan/action.yml'
+        ? s.replace(/(^ {4}default: "ghcr\.io\/[^"@]+)@sha256:[0-9a-f]{64}"$/m, '$1"')
+        : s));
+    report(osvScannerPin(tagOnly).digest === null && osvScannerPin(tagOnly).tag === OSV.tag,
+        `a digest-less pin still resolves its tag (${osvScannerPin(tagOnly).tag})`);
+    report(
+        problems(tagOnly, agreeing).some((f) => /pinned to .* with no digest/.test(f)),
+        `an image pinned by tag alone is a finding`,
+    );
+
+    // THE HALF-LANDED BUMP. Both halves look right on their own; only comparing
+    // them catches it. This is the actionlint URL/checksum failure, one file over.
+    const moved = { ...agreeing, osvTagDigest: `sha256:${'b'.repeat(64)}` };
+    report(
+        problems(REAL, moved).some((f) => /internally inconsistent/.test(f) && /osv-scanner/.test(f)),
+        `a digest that is no longer what the tag resolves to is a finding`,
+    );
+
+    // A failed read is not agreement. Empty string means "asked, got nothing";
+    // null means "did not ask", and only the first is a finding.
+    const emptyRead = { ...agreeing, osvTagDigest: '' };
+    report(
+        problems(REAL, emptyRead).some((f) => /EMPTY digest/.test(f)),
+        `an empty digest read is a failed read, not a pass`,
+    );
+    const notAsked = { ...CURRENT, osvTag: null, osvTagDigest: null };
+    report(problems(REAL, notAsked).length === 0,
+        `omitting the upstream answers entirely reports nothing about the osv pin`);
+
+    // Upstream released, which is the drift that actually happened.
+    const newer = { ...agreeing, osvTag: 'v99.0.0' };
+    report(
+        problems(REAL, newer).some((f) => /osv-scanner-action is pinned to .* but the latest release is v99\.0\.0/.test(f)),
+        `a newer osv-scanner-action release is reported`,
+    );
 }
 
 if (failures > 0) {
