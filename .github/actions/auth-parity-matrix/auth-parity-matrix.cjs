@@ -35,12 +35,16 @@
  *                             the env vars of the schemes it is NOT using, or an
  *                             ambient/passthrough value out-ranks it (#187).
  *   credential-delivery-channel
- *                             a branch that delivers a secret as a `PKR_VAR_`
- *                             must also fail closed when the template never
- *                             declares that variable -- packer drops an
- *                             undeclared `PKR_VAR_` silently, so the credential
- *                             never arrives and the build authenticates as the
- *                             agent's ambient identity instead (#332).
+ *                             a branch that delivers a credential as a TEMPLATE
+ *                             variable (`PKR_VAR_`/`TF_VAR_`) must also fail
+ *                             closed when the template never declares it: both
+ *                             tools drop an undeclared one SILENTLY, so the
+ *                             credential never arrives and the build
+ *                             authenticates as the agent's ambient identity
+ *                             instead (#332). Which names count is decided by
+ *                             VALUE, against FAILCLOSED_CREDENTIAL_ENV, not by
+ *                             a secret-shaped stem in the name -- see the note
+ *                             on that set.
  *   roleSessionName           a federated session name must be derived from job
  *                             context, not a fixed constant (#197).
  *   serviceConnection         an empty service connection must fail closed, never
@@ -385,6 +389,39 @@ const SECRET_KEY_RE = /(password|secret|privatekey|key$|accesstoken|token|jwt)/i
  *     ("DEFAULT" / "security_token" / "true"), never operator or connection
  *     input.
  */
+// Channels a provider reads WITHOUT the template declaring anything -- a config
+// file path rather than a template variable. A branch that establishes one has
+// delivered the credential whatever the template does, so a template variable
+// set beside it is a convenience duplicate and cannot strand the build on the
+// agent's ambient identity, which is the entire harm of the #332 class.
+//
+// It is a SET OF NAMES rather than a heuristic because the distinction is not
+// guessable from the name: `OCI_CLI_CONFIG_FILE` is authoritative and
+// `TF_VAR_private_key_path` is not, though both name a path to a credential.
+// Adding a name here is a claim that the provider reads it unconditionally, and
+// the burden of that claim is the same as adding one below.
+const DECLARATION_FREE_CHANNELS = new Set([
+    'OCI_CLI_CONFIG_FILE',
+    'GOOGLE_APPLICATION_CREDENTIALS',
+    'GOOGLE_CREDENTIALS',
+    'AWS_WEB_IDENTITY_TOKEN_FILE',
+]);
+
+// RESOLVED BY VALUE, NOT BY NAME SHAPE, and the difference is not cosmetic.
+//
+// The delivery cell used to select its subjects with a regex requiring a
+// `secret|jwt|password|token|privatekey|key_file` stem after `PKR_VAR_`. That
+// read a credential's NAME as evidence about what it IS, and names do not carry
+// that. It missed `PKR_VAR_oci_access_cfg_file` -- a credential in this very set,
+// delivered by this very estate -- because "access_cfg_file" contains no listed
+// stem, and it could not see `TF_VAR_` at all, so every terraform delivery was
+// outside the universe while the cell reported on the axis as though it were
+// covered (sethbacon/security-orchestration#175). A blind axis reads exactly
+// like a clean one.
+//
+// Membership of this set is now what decides, so adding a credential here adds
+// it to the delivery cell in the same edit, and a credential nobody named is
+// visibly absent rather than quietly excused by its spelling.
 const FAILCLOSED_CREDENTIAL_ENV = new Set([
     // azure-pipelines-terraform
     'ARM_CLIENT_ID', 'ARM_CLIENT_SECRET', 'ARM_TENANT_ID', 'ARM_OIDC_TOKEN',
@@ -611,20 +648,34 @@ function analyzeHandler(file, root) {
     //          fail-closed outcome, not a wrong-identity one, and several are
     //          legitimately optional.
     if (!isBase) {
-        const SECRET_VAR_RE = /setEnvironmentVariable\s*\(\s*["'](PKR_VAR_[A-Za-z0-9_]*(?:secret|jwt|password|token|privatekey|key_file)[A-Za-z0-9_]*)["']/gi;
+        const TEMPLATE_VAR_RE = /setEnvironmentVariable\s*\(\s*["']((?:PKR_VAR_|TF_VAR_)[A-Za-z0-9_]+)["']/gi;
         for (const r of regions) {
             if (r.branch === '<top>') continue;
             const region = codeLines.slice(r.lo - 1, r.hi).join('\n');
-            SECRET_VAR_RE.lastIndex = 0;
+            TEMPLATE_VAR_RE.lastIndex = 0;
             const delivered = [];
             let m;
-            while ((m = SECRET_VAR_RE.exec(region)) !== null) delivered.push(m[1]);
+            while ((m = TEMPLATE_VAR_RE.exec(region)) !== null) {
+                if (FAILCLOSED_CREDENTIAL_ENV.has(m[1])) delivered.push(m[1]);
+            }
             if (!delivered.length) continue;
-            const ok = /assertTemplateDeclaresVariable\s*\(/.test(region)
-                || /providerVarArgs\.push\s*\(/.test(region);
-            add('credential-delivery-channel', ok ? 'GUARDED' : 'UNGUARDED',
-                ok ? `${delivered.join(', ')} delivered with a declaration pre-flight or via -var`
-                   : `${delivered.join(', ')} delivered as PKR_VAR_ with nothing failing closed when the template omits the declaration`,
+            // A channel the provider reads without the template declaring
+            // anything discharges this cell on its own: the credential arrives
+            // whatever the template omits. The region is one provider branch, so
+            // a channel found in it belongs to the credential found in it.
+            const authoritative = [...DECLARATION_FREE_CHANNELS]
+                .filter((name) => new RegExp(`setEnvironmentVariable\\s*\\(\\s*["']${name}["']`).test(region));
+            // WHICH guard fired is part of the verdict. A reader triaging this
+            // cell has to check the claim, and "a pre-flight refuses when the
+            // declaration is absent" is a different thing to verify than "the
+            // provider reads a config file regardless".
+            let why = null;
+            if (/assertTemplateDeclaresVariable\s*\(/.test(region)) why = 'a declaration pre-flight';
+            else if (/providerVarArgs\.push\s*\(/.test(region)) why = 'delivery as -var, which the tool hard-errors on when the variable is undeclared';
+            else if (authoritative.length) why = `${authoritative.join(', ')}, which the provider reads without the template declaring anything`;
+            add('credential-delivery-channel', why ? 'GUARDED' : 'UNGUARDED',
+                why ? `${delivered.join(', ')} delivered, and guarded by ${why}`
+                    : `${delivered.join(', ')} delivered as a template variable with nothing failing closed when the template omits the declaration`,
                 r.lo, r.branch, /* strictExempt */ true);
         }
     }

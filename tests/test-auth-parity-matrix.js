@@ -851,6 +851,88 @@ if (actionAssertions < ACTION_ASSERTION_FLOOR) {
 for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
 
 console.log('');
+// ── the delivery cell resolves its subjects BY VALUE ────────────────────────
+//
+// The cell used to select on a secret-shaped stem in the variable's NAME, which
+// missed a credential this estate delivers (`PKR_VAR_oci_access_cfg_file`) and
+// could not see `TF_VAR_` at all (sethbacon/security-orchestration#175). These
+// drive the replacement from both directions: a credential with no secret-shaped
+// stem is now a subject, and a template variable that is not a credential is
+// still not one.
+{
+    const deliver = (lines) => ({
+        [HANDLER_FILE]: [
+            "import * as tasks from 'azure-pipelines-task-lib/task';",
+            '',
+            'export class FixturePackerCommandHandler {',
+            '    private mapAuthorizationScheme(scheme: string | undefined): AuthorizationScheme {',
+            "        if (!scheme) { throw new Error('the service connection declares no authorization scheme'); }",
+            '        return scheme as AuthorizationScheme;',
+            '    }',
+            '',
+            '    public async handleProvider(command: ProviderCommand): Promise<void> {',
+            '        const authScheme = this.mapAuthorizationScheme(',
+            '            tasks.getEndpointAuthorizationScheme(command.serviceProviderName, false)',
+            '        );',
+            "        if (authScheme === 'WorkloadIdentityFederation') {",
+            "            neutralizeEnvironmentVariables(['OCI_CLI_PROFILE']);",
+            '            if (!command.serviceProviderName) {',
+            "                throw new Error('an empty service connection cannot request a federated token');",
+            '            }',
+            "            const tenancy = tasks.getEndpointDataParameter(command.serviceProviderName, 'tenancy', false);",
+            "            requireIdentityField(tenancy, 'tenancy');",
+            ...lines,
+            '        }',
+            '    }',
+            '}',
+            '',
+        ].join('\n'),
+    });
+    const cellOf = (body) => (cellsOf(body) ?? []).find((c) => c.cell === 'credential-delivery-channel');
+
+    // No stem anywhere in the name, and it is a credential all the same.
+    const stemless = run(fixture('delivery-stemless', deliver([
+        "            setEnvironmentVariable('OCI_CLI_CONFIG_FILE', configPath, false, true);",
+        "            setEnvironmentVariable('PKR_VAR_oci_access_cfg_file', configPath, false, true);",
+    ])));
+    const a = cellOf(stemless.body);
+    report(a !== undefined, 'a credential whose name carries no secret-shaped stem is a delivery subject');
+    report(a !== undefined && /PKR_VAR_oci_access_cfg_file/.test(a.detail),
+        'and the cell names it');
+
+    // TF_VAR_ was outside the old universe entirely.
+    const tfvar = run(fixture('delivery-tf-var', deliver([
+        "            setEnvironmentVariable('OCI_CLI_CONFIG_FILE', configPath, false, true);",
+        "            setEnvironmentVariable('TF_VAR_tenancy_ocid', tenancy, false, true);",
+    ])));
+    const b = cellOf(tfvar.body);
+    report(b !== undefined && /TF_VAR_tenancy_ocid/.test(b.detail),
+        'a TF_VAR_ credential is a delivery subject too, not only PKR_VAR_');
+
+    // A declaration-free channel discharges the cell, and the verdict SAYS so.
+    report(b !== undefined && b.verdict === 'GUARDED' && /OCI_CLI_CONFIG_FILE/.test(b.detail)
+        && /without the template declaring anything/.test(b.detail),
+        'a config file the provider reads regardless guards the cell, and the detail names it');
+
+    // ...and it is load-bearing: take it away and the same code is a finding.
+    const alone = run(fixture('delivery-no-authoritative', deliver([
+        "            setEnvironmentVariable('TF_VAR_tenancy_ocid', tenancy, false, true);",
+    ])));
+    const c = cellOf(alone.body);
+    report(c !== undefined && c.verdict === 'UNGUARDED',
+        'the same delivery with no authoritative channel beside it is UNGUARDED');
+    report(alone.code === 1, `and the gate exits non-zero for it (exit ${alone.code})`);
+
+    // A template variable that is not a credential is not a subject: the set is
+    // what decides, so a region full of ordinary variables enumerates no cell.
+    const notCredential = run(fixture('delivery-not-a-credential', deliver([
+        "            setEnvironmentVariable('PKR_VAR_oci_region', region, false, true);",
+        "            setEnvironmentVariable('TF_VAR_region', region, false, true);",
+    ])));
+    report(cellOf(notCredential.body) === undefined,
+        'a template variable that is not in FAILCLOSED_CREDENTIAL_ENV raises no delivery cell');
+}
+
 if (failures > 0) {
     console.error(`auth-parity-matrix.cjs self-test: ${failures} case(s) failed.`);
     process.exit(1);
