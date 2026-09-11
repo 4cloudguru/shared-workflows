@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.26.1](https://github.com/4cloudguru/shared-workflows/compare/v1.26.0...v1.26.1) (2026-09-11)
+
+
+### Bug Fixes
+
+* **actions:** re-copy check-proxy-parity now that its per-repo floors are required ([#82](https://github.com/4cloudguru/shared-workflows/issues/82)) ([516608b](https://github.com/4cloudguru/shared-workflows/commit/516608b85319153c1caa8c541c0d657a46dcbccf))
+
 ## [1.26.0](https://github.com/4cloudguru/shared-workflows/compare/v1.25.0...v1.26.0) (2026-09-10)
 
 
