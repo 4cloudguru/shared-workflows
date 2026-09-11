@@ -305,6 +305,15 @@ jobs:
       - name: Auth-parity-matrix gate self-test
         run: node tests/test-auth-parity-matrix.js
 
+      # The seventh and last delegated gate, and the first of them to arrive
+      # with a self-test written before the move rather than after: it had none
+      # anywhere while three hand-copies drifted into disagreeing about the same
+      # code. The case that matters most is the constant-host narrowing -- a
+      # build-time-constant URL whose redirect-hop callback does not authorize is
+      # NOT exempt, which two of the three copies got wrong.
+      - name: Egress-authorization gate self-test
+        run: node tests/test-check-egress-authorization.js
+
       # The delegated gates live in two places on purpose -- canonical in
       # security-orchestration's remediation/gates/, and inside the composite
       # actions here -- and every composite script is a `cp` of canonical,

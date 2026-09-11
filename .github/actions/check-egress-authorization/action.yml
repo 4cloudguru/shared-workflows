@@ -1,0 +1,162 @@
+---
+name: Outbound calls are authorized against their destination host
+description: >-
+  Fail a repository that issues an outbound request to a destination it did not
+  fix at build time without routing the host through the shared authorizer —
+  including every redirect hop, which is where an initial-host check alone stops
+  being one.
+
+# WHY A COMPOSITE AND NOT A REUSABLE WORKFLOW — the same record its six siblings
+# carry: a reusable workflow reports as `<caller-job-id> / <called-job-name>`,
+# which RENAMES the check. This gate runs inside each extension's existing
+# required job, and a composite action is a STEP in the caller's own job, so no
+# job is renamed and no branch protection moves.
+#
+# WHY THIS ONE MOVED LAST, AND WHAT IT COST TO GET RIGHT. Its three hand-copies
+# disagreed, and neither side was simply ahead. Two carried broader sink
+# modelling (`snRequest`/`adoRequest` with a per-sink `urlArgIndex`, the
+# `@egress-reviewed:` marker and its EXEMPT-REVIEWED verdict); the third
+# enforced a STRICTER constant-host exemption, excusing a build-time-constant
+# URL only where the sink takes no per-hop authorization callback — because a
+# redirect can leave that constant host, so the callback is what decides
+# (sethbacon/azure-pipelines-packer#334, the #191 defect). The plan of record
+# for a year was "adopt the superset", which would have been a REGRESSION on
+# that axis. The union of the two landed in all three extensions first and is
+# what this ships: behaviour-neutral on all three trees at once and strictly
+# stronger than any copy it replaced.
+#
+# THE SCRIPT HERE IS BYTE-IDENTICAL TO security-orchestration's
+# remediation/gates/check-egress-authorization.js, and replay's gatelib compares
+# them. Re-wording a comment here is drift: move the wording in canonical first,
+# then re-copy and `cmp`.
+#
+# WHY IT ALSO EXPORTS ITS OWN PATH. Four task L0 suites spawn this gate under
+# `npm test` and assert its enumerated set; once a consumer stops carrying a
+# copy they need the path of the gate the `uses:` pin named, and the runner is
+# the only thing that knows it. `$ACTION_PATH` is written VERBATIM into
+# $GITHUB_ENV: no `dirname`, no suffix, no concatenation, because on a Windows
+# action path Git Bash's `dirname` returns `.` — a silently wrong answer that
+# still resolves.
+
+inputs:
+  root:
+    description: >-
+      Repository root to check. Defaults to `.`. A caller in a job that sets
+      `defaults.run.working-directory` must pass the workspace path explicitly
+      (the `github.workspace` context, written as an expression in the caller's
+      `with:`); a composite action's steps do not inherit that default.
+    required: false
+    default: "."
+  min-sites:
+    description: >-
+      The lowest number of outbound call sites this repository can honestly
+      enumerate. Required and refused below 1. The gate already refuses its own
+      empty universe — no source files, or no sink matched — so this floor is
+      for the quieter case: a walk that silently shrank. Measure it with
+      `node check-egress-authorization.js <root> --json` and record the date
+      beside the value in the caller.
+    required: true
+  json:
+    description: >-
+      Emit the machine-readable report (`--json`) instead of the human one. The
+      exit code is the same either way.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Outbound calls are authorized against their destination host
+      shell: bash
+      # EVERY INPUT ARRIVES THROUGH env, none through ${{ }} inside the script:
+      # a `${{ inputs.root }}` spliced into a `run:` body is substituted before
+      # bash sees the line, so a value carrying a quote or a semicolon becomes
+      # shell rather than an argument. That is zizmor's template-injection
+      # audit, a required check on this repository — and a gate step is the last
+      # place to model the class it exists to refuse.
+      env:
+        ROOT: ${{ inputs.root }}
+        JSON: ${{ inputs.json }}
+        MIN_SITES: ${{ inputs.min-sites }}
+        ACTION_PATH: ${{ github.action_path }}
+      # ZIZMOR `github-env` IS ACCEPTED HERE, INLINE AND BY NAME.
+      #
+      # That audit fires on any write to `$GITHUB_ENV` from a `run:` block,
+      # because an attacker-controlled value written there becomes an
+      # environment variable in every later step of the caller's job. It is
+      # right to ask, and the answer here is measured rather than asserted: the
+      # only thing this body writes is `github.action_path`, which the RUNNER
+      # produces when it materialises this action at the caller's `uses:` SHA.
+      # No caller input reaches the line — `ROOT`, `JSON` and the floors are
+      # read but never written — and the variable name is a fixed literal. The
+      # export is also the whole point of the action: four task L0 suites resolve
+      # the gate from it, and a step output would move the value through a
+      # caller-written `${{ steps.<id>.outputs… }}` expression, which is weaker,
+      # not stronger.
+      #
+      # Suppressed INLINE rather than in `.github/zizmor.yml`, deliberately:
+      # that file's `ignore:` entries match on BASENAME only (measured with
+      # zizmor 1.30.1, the pinned version — a path entry matches nothing), so a
+      # `github-env` entry there would read `action.yml` and blind this audit
+      # for every composite in this repository, present and future. This marker
+      # covers exactly one step in exactly one file.
+      run: | # zizmor: ignore[github-env]
+        set -euo pipefail
+
+        # `github.action_path` is the whole mechanism that pins the
+        # implementation to the SHA on the caller's `uses:` line. A failure
+        # here should say that, rather than surfacing as a node stack trace.
+        [ -f "$ACTION_PATH/check-egress-authorization.js" ] || {
+          echo "::error::check-egress-authorization.js is missing from the action at '$ACTION_PATH'." >&2
+          exit 1
+        }
+        # No `lib/` check: this gate's only imports are node builtins, so it is
+        # one file and `SHARED_ACTION_ASSETS` records nothing for it. Adding an
+        # import here means adding both.
+
+        # Refuse an unusable floor BEFORE anything else, so a typo is a message
+        # and not a silently permissive comparison.
+        case "$MIN_SITES" in
+          "" | *[!0-9]*)
+            echo "::error::min-sites must be a non-negative integer; got '$MIN_SITES'." >&2
+            exit 1
+            ;;
+        esac
+        [ "$MIN_SITES" -ge 1 ] || {
+          echo "::error::min-sites is '$MIN_SITES'. The gate refuses its own empty universe already; this floor catches the quieter case, a walk that silently shrank." >&2
+          exit 1
+        }
+
+        # Written AFTER the completeness checks, so the variable is never set
+        # to a directory the gate could not have started from. `echo` is safe:
+        # a runner action path contains no newline, and the heredoc form would
+        # only add a delimiter to get wrong.
+        echo "SHARED_GATE_CHECK_EGRESS_AUTHORIZATION=$ACTION_PATH" >> "$GITHUB_ENV"
+
+        args=("$ROOT")
+        case "$JSON" in
+          "" | false | FALSE | False | 0 | no) ;;
+          *) args+=("--json") ;;
+        esac
+
+        # THE VERDICT RUN. No `|| true`, no pipe, no capture: the gate's exit
+        # code IS the step's verdict, and a filter on the end of a command
+        # replaces its exit code. A finding aborts here, before the floor below
+        # — which is the intended order: the floor can only ever turn a green
+        # into a red, never a red into a green.
+        node "$ACTION_PATH/check-egress-authorization.js" "${args[@]}"
+
+        # THE FLOOR. A second, redirected run (a redirect is not a pipe and
+        # does not replace an exit code) so the caller's chosen report above is
+        # untouched and machine-readable output exists to compare.
+        node "$ACTION_PATH/check-egress-authorization.js" "$ROOT" --json > "$RUNNER_TEMP/check-egress-authorization.json"
+        MIN_SITES="$MIN_SITES" node -e '
+          const report = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+          const sites = (report.sites || []).length;
+          const floor = Number(process.env.MIN_SITES);
+          if (!(sites >= floor)) {
+            console.error(`::error::check-egress-authorization enumerated ${sites} site(s), below the declared floor of ${floor}. Either the gate stopped seeing this repository, or the floor is stale — decide which, and move the number in the same change that moved the count.`);
+            process.exit(1);
+          }
+          console.log(`check-egress-authorization floor met: sites=${sites} >= ${floor}`);
+        ' "$RUNNER_TEMP/check-egress-authorization.json"
