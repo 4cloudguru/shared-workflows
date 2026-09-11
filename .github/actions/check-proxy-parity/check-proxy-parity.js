@@ -65,7 +65,7 @@
 //                   deliberately here, once every repository has passed it.
 //   the data file   per PACKAGE, in the repository being analysed -- the fleet
 //                   tracker, raised by the same change that bumps its packages.
-//                   OPTIONAL in this phase; see REQUIRE_DATA.
+//                   REQUIRED: a repository without one is could-not-run.
 //
 // Because the rule is a MAX, a term can only ever RAISE the bar. That is the
 // whole reason one of the three is safe to keep in a file the analysed
@@ -136,37 +136,41 @@ const DATA_REL = path.join('scripts', 'lib', 'proxy-parity.data.json');
 const DATA_PATH = path.join(ROOT, DATA_REL);
 
 /**
- * PHASE A: the per-repo data file is OPTIONAL, and this constant is `false`.
+ * The data file is REQUIRED. A repository without one is exit 2, could-not-run
+ * -- never an enumerated zero, which would read exactly like a repository that
+ * issues no outbound request at all.
  *
- * No repository carries one yet. The gate is resolved from this single copy for
- * every root the replay walks, so the moment absent data is a failure, every
- * repository without a file is exit 2 -- a distributed migration run in the
- * wrong order. Data files land in each repo FIRST (they are inert while this is
- * off, because the enforced floor is a max and a missing term cannot lower it),
- * and only once all of them carry one does this default flip and the override
- * below get deleted.
+ * THE ORDER THIS ARRIVED IN IS WHY IT IS SAFE. While the file was optional this
+ * loader fell back to max(since, ESTATE_FLOORS), a floor no weaker than the one
+ * every copy of this gate enforced before the floors moved out of it -- so each
+ * repository could land its own file inertly, changing no verdict, before this
+ * side changed at all. All three did (sethbacon/azure-pipelines-packer#456,
+ * sethbacon/azure-pipelines-terraform#1171,
+ * sethbacon/azure-pipelines-release-docs#208), and only then did the fallback
+ * and its `PROXY_PARITY_DATA_OPTIONAL` override come out. Running it the other
+ * way round would have been exit 2 for three repositories in every replay host
+ * at once.
  *
- * Absent data therefore falls back to max(since, ESTATE_FLOORS), which -- with
- * the ratchet set to today's fleet -- is exactly the strongest floor any copy of
- * this gate enforces today. Nothing is weakened by the file not existing yet.
+ * BOTH ARE DELETED RATHER THAN LEFT SWITCHED OFF. An override that makes this
+ * gate run with no bar at all is a permanent way to get a green out of a
+ * repository that has declared nothing, and it would sit here reading like
+ * migration scaffolding long after the migration. The self-test asserts that no
+ * environment variable can reach this decision again, so restoring one is a red
+ * test rather than a quiet regression.
  *
- * `PROXY_PARITY_DATA_OPTIONAL=0` selects the Phase C behaviour now. It exists so
- * the fail-closed path is a path the self-test can EXECUTE rather than a branch
- * nobody has ever run; a loader whose refusal has never fired is a refusal
- * nobody has verified.
+ * The requirement points forward too: the replay resolves ONE copy of this gate
+ * for every checkout it walks, so an ado-extension repository that appears
+ * without a data file is could-not-run here. That is the right answer for a
+ * repository whose package fleet nobody has stated, and the loudest available
+ * prompt to state it.
  */
-const REQUIRE_DATA = process.env.PROXY_PARITY_DATA_OPTIONAL === '0';
-
 function loadFloors() {
     let raw;
     try {
         raw = fs.readFileSync(DATA_PATH, 'utf8');
     } catch {
-        if (REQUIRE_DATA) {
-            console.error(`FAIL: ${DATA_REL} is missing under ${ROOT}. This gate's version floors are a fact about THIS repository's fleet; without them the gate would run with no bar at all, which is could-not-run, not a clean repository.`);
-            process.exit(2);
-        }
-        return null;
+        console.error(`FAIL: ${DATA_REL} is missing under ${ROOT}. This gate's version floors are a fact about THIS repository's fleet; without them the gate would run with no bar at all, which is could-not-run, not a clean repository.`);
+        process.exit(2);
     }
     let json;
     try {

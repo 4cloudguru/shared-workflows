@@ -287,42 +287,59 @@ export async function generateIdToken(id: string): Promise<string> {
         `no task declares the packages -> no floor is judged stale (got ${JSON.stringify(out.staleFloors)})`);
 }
 
-// ── 10. PHASE A. No repository carries a data file yet, and this canonical copy
-//       is what the replay runs against all of them, so "no data file" has to be
-//       the ordinary case and has to enforce the estate ratchet on its own.
-//       max(since, ESTATE_FLOORS) is exactly the strongest floor any copy of
-//       this gate enforces today, so the same manifests get the same verdicts
-//       with the file absent as with it present.
+// ── 10. A term the ANALYSED repository owns can only ever RAISE the bar. That
+//       is the whole reason one of the three floor sources is safe to keep in a
+//       file that repository writes, so it is driven from the direction that
+//       would break it: floors BELOW the estate ratchet, which must change
+//       nothing, and a package below the ratchet, which must still be refused
+//       with only the ratchet able to refuse it.
 {
     const src = { 'handler.ts': CALLER(`import { generateIdToken } from '${PKG}';`, 'generateIdToken') };
-    const healthy = run(fixture('nodata-ok', { deps: { [PKG]: CURRENT_PKG, [CORE]: CURRENT_CORE }, sources: src, writeData: false }));
+    const floor = (v) => ({ [PKG]: v, [CORE]: '0.0.1' });
+
+    const healthy = run(fixture('data-below-ratchet', {
+        deps: { [PKG]: CURRENT_PKG, [CORE]: CURRENT_CORE }, sources: src, floors: floor('0.0.1'),
+    }));
     const sites = healthy.sites.filter((s) => s.sink === 'generateIdToken');
     report(sites.length === 1 && sites[0].verdict === 'PROXIED-BY-PACKAGE' && Array.isArray(healthy.staleFloors) && healthy.staleFloors.length === 0,
-        `no data file -> the gate still runs and the fleet-level repo is clean (got ${JSON.stringify(sites.map((s) => s.verdict))})`);
+        `a data file below the ratchet lowers nothing and the clean repo stays clean (got ${JSON.stringify(sites.map((s) => s.verdict))})`);
 
-    // The ratchet, with no data file to help it: 0.6.0 is above the sink's
-    // `since` (ado 0.5.0), so ONLY ESTATE_FLOORS can refuse it. A case whose
-    // verdict survives deleting the term it names is a case that tests nothing.
-    const regressed = run(fixture('nodata-ratchet', { deps: { [PKG]: '^0.6.0', [CORE]: CURRENT_CORE }, sources: src, writeData: false }));
+    // 0.6.0 is above the sink's `since` (ado 0.5.0) and the file asks for less
+    // than either, so ONLY ESTATE_FLOORS can refuse it. A case whose verdict
+    // survives deleting the term it names is a case that tests nothing.
+    const regressed = run(fixture('data-cannot-lower-the-ratchet', {
+        deps: { [PKG]: '^0.6.0', [CORE]: CURRENT_CORE }, sources: src, floors: floor('0.0.1'),
+    }));
     const bad = regressed.sites.filter((s) => s.sink === 'generateIdToken');
     report(bad.length === 1 && bad[0].verdict === 'UNPROXIED',
-        `no data file -> the estate ratchet alone still refuses a stale package (got ${JSON.stringify(bad.map((s) => s.verdict))})`);
+        `a data file below the ratchet cannot talk the ratchet out of refusing a stale package (got ${JSON.stringify(bad.map((s) => s.verdict))})`);
 }
 
-// ── 11. PHASE C, executed now. Once every repository carries a data file the
-//       default flips and an absent one is could-not-run -- exit 2, no JSON,
-//       never an enumerated zero, which would look exactly like a repository
-//       with no outbound calls. Exercised here through the override so the
-//       refusal is a path that has actually run before it becomes the default.
+// ── 11. An absent data file is could-not-run -- exit 2, no JSON, never an
+//       enumerated zero, which would look exactly like a repository with no
+//       outbound calls at all. This was the migration's destination and is now
+//       simply the behaviour: no override selects it and none can switch it off.
 {
     const root = fixture('nodata-required', {
         deps: { [PKG]: CURRENT_PKG, [CORE]: CURRENT_CORE },
         sources: { 'handler.ts': CALLER(`import { generateIdToken } from '${PKG}';`, 'generateIdToken') },
         writeData: false,
     });
-    const r = spawn(root, { PROXY_PARITY_DATA_OPTIONAL: '0' });
+    const r = spawn(root);
     report(r.status === 2 && !r.stdout.includes('"sites"') && /proxy-parity\.data\.json is missing/.test(r.stderr),
-        `data required but absent -> exit 2 and no envelope, so the replay reads could-not-run (exit ${r.status})`);
+        `data absent -> exit 2 and no envelope, so the replay reads could-not-run (exit ${r.status})`);
+
+    // The escape hatch is gone, and stays gone. A migration override that makes
+    // this gate run with no bar at all would read like scaffolding and behave
+    // like a permanent way to get a green out of a repository that declared
+    // nothing, so its ABSENCE is asserted rather than trusted: the source may
+    // not consult the environment for this decision, and the refusal must not
+    // be talked out of it by the variable that used to.
+    report(!/process\.env/.test(fs.readFileSync(SCRIPT, 'utf8')),
+        'the gate reads no environment variable at all, so no override can reach the floors');
+    const hatch = spawn(root, { PROXY_PARITY_DATA_OPTIONAL: '1' });
+    report(hatch.status === 2 && /proxy-parity\.data\.json is missing/.test(hatch.stderr),
+        `the retired override cannot bring the fallback back (exit ${hatch.status})`);
 }
 
 // ── 12. a data file the gate cannot read is could-not-run in every phase: a
