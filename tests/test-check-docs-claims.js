@@ -344,7 +344,7 @@ report(!/\$\{\{/.test(RUN_BODY),
     'the gate body interpolates no ${{ }} expression; inputs arrive through env');
 
 /** Run the extracted step with the env the action binds, and report its status. */
-function runStep(root, { json = 'false', actionPath } = {}) {
+function runStep(root, { json = 'false', actionPath, floor = '1' } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-claims-step-'));
     const script = path.join(dir, 'step.sh');
     fs.writeFileSync(script, RUN_BODY);
@@ -355,6 +355,10 @@ function runStep(root, { json = 'false', actionPath } = {}) {
             ...process.env,
             ROOT: root,
             JSON: json,
+            MIN_CLAIMS: floor,
+            // The floor writes its machine report here. A runner always sets it;
+            // the harness must too, or `set -u` fails the body before the gate runs.
+            RUNNER_TEMP: dir,
             ACTION_PATH: actionPath !== undefined ? actionPath : path.dirname(SCRIPT),
         },
     });
@@ -407,6 +411,40 @@ if (assertions < ASSERTION_FLOOR) {
     failures += 1;
 } else {
     console.log(`  OK   harness: made ${assertions} assertion(s), floor is ${ASSERTION_FLOOR}`);
+}
+
+// ── the required anti-vacuity floor (4cloudguru/shared-workflows#75) ────────
+//
+// This gate exits 0 over a repository it enumerated nothing in, so the caller
+// declares what it measured and the step refuses a count below it. The floor
+// runs AFTER the gate's own verdict, so it can only ever turn a green into a
+// red. Driven from every direction that would leave it useless: absent, zero,
+// non-numeric, one above the count, and exactly at it.
+{
+    const root = fixture('step-floor', { workflowBody: OK_WORKFLOW });
+    const measured = Object.values(JSON.parse(
+        spawnSync(process.execPath, [SCRIPT, root, '--json'], { encoding: 'utf8' }).stdout,
+    ).enumerated).reduce((a, b) => a + b, 0);
+    const atFloor = runStep(root, { floor: String(measured) });
+    report(atFloor.status === 0 && /floor met/.test(atFloor.stdout),
+        `a floor at the measured count passes and says so (exit ${atFloor.status})`);
+
+    const above = runStep(root, { floor: String(measured + 1) });
+    report(above.status === 1 && /below the declared floor/.test(above.stdout),
+        `a floor one above the count fails, naming both numbers (exit ${above.status})`);
+
+    const absent = runStep(root, { floor: '' });
+    report(absent.status === 1 && /must be a non-negative integer/.test(absent.stdout),
+        'an omitted floor is refused -- GitHub does not enforce `required: true` on an action input');
+
+    const zero = runStep(root, { floor: '0' });
+    report(zero.status === 1 && /cannot tell/.test(zero.stdout),
+        'a floor of zero is refused: it cannot tell "checked everything" from "checked nothing"');
+
+    const junk = runStep(root, { floor: 'lots' });
+    report(junk.status === 1 && /must be a non-negative integer/.test(junk.stdout),
+        'a non-numeric floor is refused rather than compared');
+    fs.rmSync(root, { recursive: true, force: true });
 }
 
 if (failures > 0) {
