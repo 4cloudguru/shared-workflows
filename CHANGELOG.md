@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.0](https://github.com/4cloudguru/shared-workflows/compare/v1.27.0...v1.28.0) (2026-09-11)
+
+
+### Features
+
+* **actions:** add the check-egress-authorization composite, the seventh and last ([#87](https://github.com/4cloudguru/shared-workflows/issues/87)) ([b38a319](https://github.com/4cloudguru/shared-workflows/commit/b38a319349375169739c2b4b3a4359abf02709d9))
+
 ## [1.27.0](https://github.com/4cloudguru/shared-workflows/compare/v1.26.1...v1.27.0) (2026-09-11)
 
 
