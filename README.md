@@ -202,6 +202,17 @@ canonical gate, not to the action. Every floor runs **after** the gate's own
 verdict run, so a finding aborts first: inline logic in an `action.yml` may turn
 a green into a red and never the other way round.
 
+**The first two composites now take one too.** `check-docs-claims` and
+`check-shared-module-pins` shipped before that rule existed and could still be
+green over a repository they read nothing in, which is
+4cloudguru/shared-workflows#75. `check-docs-claims` takes `min-claims`, the sum
+of its own `enumerated` counters, and `check-shared-module-pins` takes
+`min-scanned`, the task manifests it read; both are required and refused below
+1, and both are checked after the verdict run like the others. **This is a
+breaking change for the three callers**: an omitted input is refused, because
+GitHub does not enforce `required: true` on an action input, so the roll to this
+release and the new input lines belong in one pull request per repository.
+
 **And `check-enforced-disciplines` gains one derived check in the same release.**
 `scripts/check-enforced-disciplines.js` leaves the three extensions with this
 wave, but `scripts/lib/task-dirs.js` cannot: it has four to six *non-gate*

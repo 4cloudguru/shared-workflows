@@ -51,6 +51,22 @@ description: >-
 # how many pins it enumerated, so an empty universe is distinguishable from a
 # walk that looked nowhere. Exit 0 over nothing is not a pass.
 
+# WHY A FLOOR INPUT, AND WHY IT IS REQUIRED.
+#
+# This gate exits 0 over a repository it enumerated nothing in, and a green over
+# an empty universe is indistinguishable from a green over a checked one. The
+# three gate composites added in v1.26.0 all take a measured floor for exactly
+# that reason; these two, which shipped first, did not, and that gap is
+# 4cloudguru/shared-workflows#75.
+#
+# The input is REQUIRED with no default, so a caller has to have looked at its
+# own number rather than inheriting one that happens to pass. It is checked
+# AFTER the gate's own verdict run, so it can only ever turn a green into a red,
+# never a red into anything else -- a finding aborts before the floor executes.
+#
+# Declare the measured value with the date and the command that produced it
+# beside it, and move it in the same change that legitimately moves the count.
+
 inputs:
   root:
     description: >-
@@ -60,6 +76,14 @@ inputs:
       taken a root.
     required: false
     default: "."
+  min-scanned:
+    description: >-
+      The lowest number of task manifests this repository can honestly read.
+      Required and refused below 1 — a pin check that read no manifest enumerates
+      no pin and passes, which is the vacuous green this floor exists to refuse.
+      Measure it with `node check-shared-module-pins.js <root> --json` and read
+      `scanned`; record the date beside the value in the caller.
+    required: true
   json:
     description: >-
       Emit the machine-readable report (`--json`) instead of the human table.
@@ -84,6 +108,7 @@ runs:
       env:
         ROOT: ${{ inputs.root }}
         JSON: ${{ inputs.json }}
+        MIN_SCANNED: ${{ inputs.min-scanned }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
@@ -93,6 +118,21 @@ runs:
         # here should say that, rather than surfacing as a node stack trace.
         [ -f "$ACTION_PATH/check-shared-module-pins.js" ] || {
           echo "::error::check-shared-module-pins.js is missing from the action at '$ACTION_PATH'." >&2
+          exit 1
+        }
+
+        # Refuse an unusable floor BEFORE anything else, so a typo is a message
+        # rather than a silently permissive comparison. GitHub does not enforce
+        # `required: true` on an action input, so the empty case is the one that
+        # actually catches a caller who forgot.
+        case "$MIN_SCANNED" in
+          "" | *[!0-9]*)
+            echo "::error::min-scanned must be a non-negative integer; got '$MIN_SCANNED'. It is required: a pin check that read no task manifest is not a pass." >&2
+            exit 1
+            ;;
+        esac
+        [ "$MIN_SCANNED" -ge 1 ] || {
+          echo "::error::min-scanned is '$MIN_SCANNED'. A floor of zero cannot tell 'read every task and found the pins in step' from 'read no task at all'." >&2
           exit 1
         }
 
@@ -112,3 +152,18 @@ runs:
         # re-raise it, so nothing captures it. A pipe would be worse than a
         # capture: a filter on the end of a command REPLACES its exit code.
         node "$ACTION_PATH/check-shared-module-pins.js" "${args[@]}"
+
+        # THE FLOOR. A second, redirected run (a redirect is not a pipe and does
+        # not replace an exit code) so the caller's chosen report above is
+        # untouched and machine-readable output exists to compare.
+        node "$ACTION_PATH/check-shared-module-pins.js" "$ROOT" --json > "$RUNNER_TEMP/check-shared-module-pins.json"
+        MIN_SCANNED="$MIN_SCANNED" node -e '
+          const report = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+          const seen = report.scanned;
+          const floor = Number(process.env.MIN_SCANNED);
+          if (!(seen >= floor)) {
+            console.error(`::error::check-shared-module-pins.js enumerated ${seen} scanned, below the declared floor of ${floor}. Either the gate stopped seeing this repository, or the floor is stale — decide which, and move the number in the same change that moved the count.`);
+            process.exit(1);
+          }
+          console.log(`check-shared-module-pins floor met: scanned=${seen} >= ${floor}`);
+        ' "$RUNNER_TEMP/check-shared-module-pins.json"
