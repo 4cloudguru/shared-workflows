@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.27.0](https://github.com/4cloudguru/shared-workflows/compare/v1.26.1...v1.27.0) (2026-09-11)
+
+
+### Features
+
+* **actions:** require an anti-vacuity floor on the first two composites ([#86](https://github.com/4cloudguru/shared-workflows/issues/86)) ([d038370](https://github.com/4cloudguru/shared-workflows/commit/d038370c6e092c7af046484eb80673002ba51c21))
+
+
+### Bug Fixes
+
+* **actions:** re-copy auth-parity-matrix now that delivery resolves by value ([#84](https://github.com/4cloudguru/shared-workflows/issues/84)) ([b02ef9d](https://github.com/4cloudguru/shared-workflows/commit/b02ef9d04240a4c297d41fc49d318f32c5cc6d6e))
+
 ## [1.26.1](https://github.com/4cloudguru/shared-workflows/compare/v1.26.0...v1.26.1) (2026-09-11)
 
 
