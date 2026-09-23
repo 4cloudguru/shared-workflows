@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.1](https://github.com/4cloudguru/shared-workflows/compare/v1.28.0...v1.28.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **actions:** raise the estate floor for @4cloudguru/pipeline-task-ado to 0.11.1 ([#89](https://github.com/4cloudguru/shared-workflows/issues/89)) ([5693be1](https://github.com/4cloudguru/shared-workflows/commit/5693be14613d2ad5aa6d4d409ea6b884ff08bf9a))
+
 ## [1.28.0](https://github.com/4cloudguru/shared-workflows/compare/v1.27.0...v1.28.0) (2026-09-11)
 
 
