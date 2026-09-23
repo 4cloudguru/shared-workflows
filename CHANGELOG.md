@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.0](https://github.com/4cloudguru/shared-workflows/compare/v1.28.1...v1.29.0) (2026-09-23)
+
+
+### Features
+
+* **zizmor:** fail a config whose ignores suppress nothing ([#91](https://github.com/4cloudguru/shared-workflows/issues/91)) ([7fc3810](https://github.com/4cloudguru/shared-workflows/commit/7fc3810359a9eea3706b308f364b8455d01bc0bb))
+
 ## [1.28.1](https://github.com/4cloudguru/shared-workflows/compare/v1.28.0...v1.28.1) (2026-09-23)
 
 
