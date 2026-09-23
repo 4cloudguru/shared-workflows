@@ -25,6 +25,12 @@ const ROOT = path.resolve(__dirname, '..');
 const SECURITY = '.github/workflows/workflow-security.yml';
 const RECORD = '.github/workflows/workflow-security-record.yml';
 const OSV_ACTION = '.github/actions/osv-scan/action.yml';
+// The anchor gate pins the scanner too, and has to run the SAME one the lint
+// runs: it audits a repository's zizmor config against the findings a given
+// version produces, so a skew against the lint is not a version difference, it
+// is a disagreement about what a finding is -- surfacing as a live ignore
+// reported dead, a false failure indistinguishable from a true one.
+const ANCHOR_ACTION = '.github/actions/check-zizmor-anchors/action.yml';
 
 /** Every zizmor `version:` pin, with the file it came from. */
 function zizmorPins(root) {
@@ -37,6 +43,31 @@ function zizmorPins(root) {
         const re = /zizmorcore\/zizmor-action@[0-9a-f]{40}[^\n]*\n(?:\s*(?:#[^\n]*|with:)\n)*?(?:[^\n]*\n)*?\s*version:\s*["']([0-9.]+)["']/g;
         let m;
         while ((m = re.exec(text)) !== null) out.push({ file: rel, version: m[1] });
+    }
+    // The anchor gate does not use zizmor-action -- it runs the container
+    // directly -- so its pin is the `version:` input's default rather than a
+    // `with:` value, and the pattern above cannot see it. Read separately, and
+    // returned into the SAME list so the existing agreement and upstream checks
+    // cover it without knowing it is different.
+    const anchorPath = path.join(root, ANCHOR_ACTION);
+    if (fs.existsSync(anchorPath)) {
+        const text = fs.readFileSync(anchorPath, 'utf8');
+        // `\r?` is not decoration: this repo has core.autocrlf=true and no
+        // .gitattributes, so the working copy is CRLF on Windows and LF in CI.
+        // A pattern that only matched LF would read the pin as MISSING on a
+        // contributor's machine and present in CI -- the reader disagreeing
+        // with itself about whether a pin exists.
+        //
+        // The continuation line may also be EMPTY. A folded `description: >-`
+        // block with a paragraph break contains one, and a pattern demanding
+        // every line be indented stops dead there and reports no pin -- which
+        // is how this read failed the first time it was written.
+        //
+        // `\d+\.\d+\.\d+` rather than `[0-9.]+` because the latter also matches
+        // the `root` input's `"."` default, so a version that went missing
+        // would be silently replaced by a pin of ".".
+        const m = text.match(/^ {2}version:\r?\n(?:(?:[ \t][^\n]*)?\r?\n)*?[ \t]+default:\s*["'](\d+\.\d+\.\d+)["']/m);
+        if (m) out.push({ file: ANCHOR_ACTION, version: m[1] });
     }
     return out;
 }
@@ -136,7 +167,7 @@ function problems(root, latest) {
     const zizmor = zizmorPins(root);
 
     if (zizmor.length === 0) {
-        found.push(`no zizmor version pin found in ${SECURITY} or ${RECORD}. The pin has moved or been dropped; ` +
+        found.push(`no zizmor version pin found in ${SECURITY}, ${RECORD} or ${ANCHOR_ACTION}. The pin has moved or been dropped; ` +
             'this check cannot be read as clean when it resolved nothing.');
     }
     // Internal consistency first: two files pinning different scanners would
@@ -146,11 +177,11 @@ function problems(root, latest) {
     if (distinct.length > 1) {
         found.push(`zizmor is pinned at ${distinct.length} different versions: ` +
             zizmor.map((z) => `${z.version} in ${z.file}`).join(', ') +
-            '. The blocking gate and the recorder must run the same scanner.');
+            '. The blocking gate, the recorder and the anchor gate must run the same scanner.');
     }
     if (distinct.length === 1 && latest.zizmor && distinct[0] !== latest.zizmor) {
         found.push(`zizmor is pinned to ${distinct[0]} but the latest release is ${latest.zizmor}. ` +
-            'Bump `version:` in both workflow-security.yml and workflow-security-record.yml.');
+            'Bump `version:` in workflow-security.yml, workflow-security-record.yml and check-zizmor-anchors/action.yml.');
     }
 
     // The action pin, and whether it can actually install the scanner pin.

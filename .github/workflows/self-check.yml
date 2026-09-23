@@ -314,6 +314,26 @@ jobs:
       - name: Egress-authorization gate self-test
         run: node tests/test-check-egress-authorization.js
 
+      # The gate over the lint's own configuration. A zizmor ignore is written
+      # against coordinates that were true the day it was written, and it rots
+      # two ways: loudly, when the finding stays and the file moves, and
+      # SILENTLY, when the finding is fixed at source and the entry is left
+      # behind over coordinates that now hold unrelated code. The silent one had
+      # already happened -- sethbacon/azure-pipelines-release-docs declared nine
+      # ignores and zizmor was applying two, the other five sitting on a
+      # `contents: read`, a comment, a `package-manager-cache: false`, a
+      # `subject-path:` and a `cosign sign-blob` -- and a green lint said
+      # nothing, because a suppression that matches nothing reports nothing.
+      #
+      # The suite is hermetic: it hands the gate a findings file rather than
+      # running zizmor, so it needs no Docker, no network and no token, and the
+      # cases assert on the matching rule, which is the part that can be wrong.
+      # Two facts it pins are not guessable and were measured, not assumed --
+      # zizmor's JSON rows are 0-based while the ignore syntax is 1-based, and
+      # an ignore addresses ONLY a finding's Primary location.
+      - name: Zizmor anchor gate self-test
+        run: node tests/test-check-zizmor-anchors.js
+
       # The delegated gates live in two places on purpose -- canonical in
       # security-orchestration's remediation/gates/, and inside the composite
       # actions here -- and every composite script is a `cp` of canonical,
