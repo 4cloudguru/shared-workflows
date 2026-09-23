@@ -40,8 +40,10 @@ inputs:
       disagreement about what a finding is, reported as a dead anchor.
 
       Defaults to the version workflow-security.yml lints at. That default is
-      not a convenience: tests/test-check-zizmor-anchors.js asserts it equals
-      that workflow's ZIZMOR_VERSION, so the two cannot drift apart quietly.
+      not a convenience and it is not free-floating: scripts/check-tooling-pins.cjs
+      reads it alongside the lint's and the recorder's pins and reports any
+      disagreement, so the three cannot drift apart quietly. KEEP IT A LITERAL
+      — that reader matches on one, and an expression here reads as no pin.
     required: false
     default: "1.30.1"
   root:

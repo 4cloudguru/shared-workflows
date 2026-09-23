@@ -246,24 +246,20 @@ const CACHE = [finding('cache-poisoning', '.github/workflows/release.yml', 216, 
     report(/case "\$VERSION" in/.test(body) && /\[0-9\]\*\.\[0-9\]\*\.\[0-9\]\*/.test(body),
         'an unusable version is refused before anything is pulled');
 
-    // THE SKEW GUARD. The gate audits a config against the findings ONE zizmor
-    // version produces, and the lint that honours that config runs in a
-    // different file. If the two versions drift, the gate starts reporting
-    // dead anchors that are alive under the version the lint actually used —
-    // a false failure that looks exactly like a true one. Neither literal is
-    // reachable from the other at runtime, so it is asserted here instead.
-    const LINT = path.join(__dirname, '..', '.github', 'workflows', 'workflow-security.yml');
-    const lintBody = fs.readFileSync(LINT, 'utf8').replace(/\r\n/g, '\n');
-    const lintVersion = (lintBody.match(/^\s*ZIZMOR_VERSION:\s*"([^"]+)"/m) || [])[1];
-    const actionDefault = (body.match(/default:\s*"(\d+\.\d+\.\d+)"/) || [])[1];
-    report(lintVersion !== undefined, `workflow-security.yml declares ZIZMOR_VERSION (got ${lintVersion})`);
-    report(actionDefault !== undefined, `the action declares a pinned default version (got ${actionDefault})`);
-    report(lintVersion === actionDefault,
-        `the gate audits at the version the lint runs (lint ${lintVersion}, gate ${actionDefault})`);
-
-    // And the lint must actually USE the named value rather than re-stating it.
-    report(/version: \$\{\{ env\.ZIZMOR_VERSION \}\}/.test(lintBody),
-        'the lint consumes ZIZMOR_VERSION rather than repeating the literal');
+    // THE SKEW GUARD LIVES IN check-tooling-pins.cjs, NOT HERE.
+    //
+    // This gate audits a config against the findings one scanner version
+    // produces, so it has to run the version the lint runs. That is a real
+    // invariant and it needs a test -- but this repository already had the
+    // mechanism for it: check-tooling-pins.cjs reads every zizmor pin and
+    // holds them equal, AND checks them against upstream. A second, private
+    // comparison here would be a duplicate that can disagree with the first,
+    // which is the same failure mode this whole change is about. The action's
+    // default was added to that reader instead; test-tooling-pins.js covers
+    // the drift. All that is asserted here is that the pin stays in the shape
+    // that reader can see.
+    report(/^ {2}version:\r?\n(?:(?:[ \t][^\n]*)?\r?\n)*?[ \t]+default:\s*"\d+\.\d+\.\d+"/m.test(body),
+        'the scanner pin is a literal default, in the shape check-tooling-pins.cjs reads');
 }
 
 console.log(failures === 0

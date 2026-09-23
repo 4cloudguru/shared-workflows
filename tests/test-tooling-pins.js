@@ -77,12 +77,21 @@ function tree(edit = (s) => s) {
     const osvSrc = path.join(REAL, '.github', 'actions', 'osv-scan', 'action.yml');
     fs.writeFileSync(path.join(root, '.github', 'actions', 'osv-scan', 'action.yml'),
         edit(fs.readFileSync(osvSrc, 'utf8'), 'osv-scan/action.yml'));
+    // check-zizmor-anchors pins the scanner as well, as its `version:` input
+    // default rather than a zizmor-action `with:`. Copied for the same reason
+    // the osv action is: a tree missing it is a tree where one of the three
+    // pins cannot drift, so the drift case below would be testing two files
+    // while claiming to test three.
+    fs.mkdirSync(path.join(root, '.github', 'actions', 'check-zizmor-anchors'), { recursive: true });
+    const anchorSrc = path.join(REAL, '.github', 'actions', 'check-zizmor-anchors', 'action.yml');
+    fs.writeFileSync(path.join(root, '.github', 'actions', 'check-zizmor-anchors', 'action.yml'),
+        edit(fs.readFileSync(anchorSrc, 'utf8'), 'check-zizmor-anchors/action.yml'));
     return root;
 }
 
 // ── the pins are read at all
 {
-    report(zizmorPins(REAL).length === 2, `both zizmor pins are found (got ${zizmorPins(REAL).length})`);
+    report(zizmorPins(REAL).length === 3, `all three zizmor pins are found (got ${zizmorPins(REAL).length})`);
     const al = actionlintPin(REAL);
     report(al.urlVersion && al.sha256, `the actionlint version and checksum are found (v${al.urlVersion})`);
     report(problems(REAL, CURRENT).length === 0, `the real tree is clean against its own pinned versions`);
@@ -90,7 +99,13 @@ function tree(edit = (s) => s) {
 
 // ── resolving nothing must not read as clean
 {
-    const root = tree((s) => s.replace(/version:\s*["'][0-9.]+["']/g, 'version: ""'));
+    // Both shapes have to be blanked. The anchor gate's pin is a `default:`,
+    // not a `version:`, so an edit that only rewrote the latter would leave one
+    // pin standing -- and a tree with one surviving pin is not the tree this
+    // case means to build.
+    const root = tree((s) => s
+        .replace(/version:\s*["'][0-9.]+["']/g, 'version: ""')
+        .replace(/default:\s*["']\d+\.\d+\.\d+["']/g, 'default: ""'));
     const found = problems(root, CURRENT);
     report(found.some((f) => /no zizmor version pin found/.test(f)),
         `a tree where the zizmor pin cannot be resolved is a finding, not a pass`);
@@ -117,8 +132,27 @@ function tree(edit = (s) => s) {
     const root = tree((s, f) =>
         f === 'workflow-security-record.yml' ? s.replace(`"${CURRENT.zizmor}"`, '"0.0.1"') : s);
     const found = problems(root, CURRENT);
+    // Three pins, two distinct versions -- the message counts VERSIONS, not
+    // files.
     report(found.some((f) => /pinned at 2 different versions/.test(f)),
         `the gate and the recorder pinning different scanners is a finding`);
+}
+
+// ── THE ANCHOR GATE drifting from the lint
+//
+// check-zizmor-anchors audits a repository's zizmor config against the findings
+// one scanner version produces, and the lint that honours that config runs at
+// the version pinned in workflow-security.yml. Drift between them is not a
+// version difference -- it is a disagreement about what a finding is, and it
+// surfaces as a live ignore reported dead: a false failure indistinguishable
+// from a true one. Nothing else in this repository can see that, because the
+// two pins are read by different files for different reasons.
+{
+    const root = tree((s, f) =>
+        f === 'check-zizmor-anchors/action.yml' ? s.replace(`"${CURRENT.zizmor}"`, '"0.0.1"') : s);
+    const found = problems(root, CURRENT);
+    report(found.some((f) => /different versions/.test(f) && /check-zizmor-anchors/.test(f)),
+        `the anchor gate auditing at a different version than the lint is a finding`);
 }
 
 // ── the OWNER is part of the actionlint pin
