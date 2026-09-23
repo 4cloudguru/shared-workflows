@@ -1,0 +1,139 @@
+---
+name: zizmor ignores still suppress something
+description: >-
+  Fail a repository whose zizmor config declares an ignore that matches no
+  finding — an entry left armed over coordinates that now hold unrelated code,
+  where the next finding of that rule is swallowed silently.
+
+# WHY THIS IS A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW.
+#
+# Same reasoning recorded on `check-shared-module-pins`, `check-docs-claims`
+# and `check-enforced-disciplines`: a reusable workflow reports as
+# `<caller-job-id> / <called-job-name>`, which RENAMES the check. This runs
+# inside workflow-security.yml's existing `zizmor` job, whose context
+# `Workflow Security / Zizmor (workflow security lint)` is required on `main`
+# in all three extension consumers. A composite action is a STEP inside that
+# job, so the job keeps its name and no branch protection moves.
+#
+# WHY IT SITS BESIDE THE LINT RATHER THAN IN ITS OWN JOB. The thing being
+# checked is the lint's own configuration. Splitting them lets a repository
+# have a green lint and a rotted config on two different commits; in the same
+# job they are one verdict about one run.
+#
+# WHY IT TAKES THE FINDINGS FROM A CONTAINER RUN RATHER THAN INSTALLING ZIZMOR.
+# `zizmorcore/zizmor-action` shells out to Docker and runs
+# `ghcr.io/zizmorcore/zizmor:<version>` pinned by digest; it leaves no binary
+# on PATH, so there is nothing for a later step to reuse. A gate that installed
+# its own zizmor from a different channel could disagree with the lint about
+# what a finding is, and would then report a dead anchor that is not dead. The
+# step below runs THE SAME IMAGE AT THE SAME VERSION the caller passed to the
+# lint, so the two cannot disagree about anything except the flags, which is
+# the only difference that should exist: `--no-ignores`, because a gate that
+# honoured the ignores could never see that one of them matches nothing.
+
+inputs:
+  version:
+    description: >-
+      The exact zizmor version to audit with, X.Y.Z. MUST be the same value
+      passed to the lint itself — the gate compares the lint's declared ignores
+      against this run's findings, so a version skew between them is a
+      disagreement about what a finding is, reported as a dead anchor.
+
+      Defaults to the version workflow-security.yml lints at. That default is
+      not a convenience: tests/test-check-zizmor-anchors.js asserts it equals
+      that workflow's ZIZMOR_VERSION, so the two cannot drift apart quietly.
+    required: false
+    default: "1.30.1"
+  root:
+    description: Repository root to check. Defaults to the workspace.
+    required: false
+    default: "."
+  token:
+    description: >-
+      Token for zizmor's online audits, passed through exactly as the lint
+      passes it. FOUR AUDITS CANNOT RUN OFFLINE -- impostor-commit,
+      known-vulnerable-actions, ref-confusion and stale-action-refs -- and an
+      ignore for one of them would look dead to this gate for no reason other
+      than that this step had no token. Running offline here while the lint
+      runs online is the one divergence that turns this gate into a liar, so
+      it does not run offline.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Every zizmor ignore still suppresses a real finding
+      shell: bash
+      # EVERY INPUT ARRIVES THROUGH env, none through ${{ }} inside the script.
+      # A `${{ inputs.version }}` spliced into a `run:` body is substituted
+      # before bash sees the line, so a caller-supplied value carrying a quote
+      # or a semicolon becomes shell rather than an argument. That is zizmor's
+      # own template-injection audit, which is a required check here — and the
+      # gate guarding the zizmor config is the last place to model the class
+      # zizmor exists to refuse.
+      env:
+        VERSION: ${{ inputs.version }}
+        ROOT: ${{ inputs.root }}
+        TOKEN: ${{ inputs.token }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+
+        # `github.action_path` is the whole mechanism pinning the
+        # implementation to the SHA on the caller's `uses:` line. A failure
+        # here should say so, rather than surfacing as a node stack trace.
+        [ -f "$ACTION_PATH/check-zizmor-anchors.js" ] || {
+          echo "::error::check-zizmor-anchors.js is missing from the action at '$ACTION_PATH'." >&2
+          exit 1
+        }
+
+        # Refuse an unusable version BEFORE running anything, so a typo is a
+        # message rather than a container pull failure fifty lines later.
+        # GitHub does not enforce `required: true` on an action input, so the
+        # empty case is the one that actually catches a caller who forgot.
+        case "$VERSION" in
+          "")
+            echo "::error::version is empty. It must be the same exact X.Y.Z version passed to the zizmor lint; a gate that picked its own would be comparing the config against a different tool." >&2
+            exit 1
+            ;;
+          [0-9]*.[0-9]*.[0-9]*) ;;
+          *)
+            echo "::error::version must be an exact X.Y.Z version, not '$VERSION'. 'latest' is illegible here for the same reason it is illegible on the lint: the version that decided a required check would appear nowhere in the repository." >&2
+            exit 1
+            ;;
+        esac
+
+        FINDINGS="$RUNNER_TEMP/zizmor-no-ignores.json"
+
+        # THE FLAGS ARE THE ONLY THING THAT MAY DIFFER FROM THE LINT, and only
+        # these two:
+        #
+        # --no-ignores is the entire point: a gate that honoured the ignores
+        #   could never observe that one of them matches nothing.
+        # --no-exit-codes collapses zizmor's severity-encoded 11..14 to 0, so a
+        #   non-zero status here is a real failure to run rather than "found
+        #   something". Without it this step would hardcode the severity table,
+        #   and the day zizmor adds a severity the gate calls a good audit a
+        #   crash.
+        #
+        # Everything else -- version, persona, online access -- is left at the
+        # same setting the lint uses, because every divergence is a way for
+        # this gate to report a dead anchor that is not dead.
+        #
+        # Read-only mount: this step inspects, it does not fix.
+        docker run --rm \
+          --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+          --workdir /workspace \
+          --env "GH_TOKEN=${TOKEN}" \
+          "ghcr.io/zizmorcore/zizmor:${VERSION}" \
+          --no-ignores --no-exit-codes --format=json \
+          -- "$ROOT/.github/" \
+          > "$FINDINGS"
+
+        # NO `|| true`, NO pipe, NO `set +e`. The gate's exit code IS the
+        # step's verdict — 1 is a dead ignore and 2 is could-not-run, and this
+        # estate's own lesson is that a could-not-run swallowed into a pass is
+        # the worst of the three. A pipe would be worse than a capture: a
+        # filter on the end of a command REPLACES its exit code.
+        node "$ACTION_PATH/check-zizmor-anchors.js" "$ROOT" --findings "$FINDINGS"

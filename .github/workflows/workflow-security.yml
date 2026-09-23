@@ -52,6 +52,17 @@ on:
 permissions:
   contents: read
 
+# THE VERSION THE ESTATE LINTS AT, named once and asserted against.
+#
+# The check-zizmor-anchors action audits a repository's zizmor config against
+# the findings THIS version produces, so the two have to agree. They no longer
+# sit in the same file -- consumers call the action directly, the way they call
+# every other composite here -- so tests/test-check-zizmor-anchors.js reads this
+# value and the action's default and fails if they diverge. Bump both, or the
+# suite says so.
+env:
+  ZIZMOR_VERSION: "1.30.1"
+
 jobs:
   zizmor:
     name: Zizmor (workflow security lint)
@@ -83,7 +94,7 @@ jobs:
           # the diff showed only an action bump. A zizmor change alters what a
           # required check enforces in every consumer at once, so it should be a
           # reviewable line rather than a side effect.
-          version: "1.30.1"
+          version: ${{ env.ZIZMOR_VERSION }}
           # DO NOT "simplify" this to the default. `advanced-security: true` is
           # the action's default and selects `--format=sarif`, where zizmor
           # EXITS 0 WHATEVER IT FINDS -- the gate silently becomes a reporter.
