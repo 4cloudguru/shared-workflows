@@ -128,7 +128,7 @@ const ROOT = path.resolve(process.argv.filter((a) => a !== '--json')[2] || proce
  * "raise it".
  */
 const ESTATE_FLOORS = {
-    '@4cloudguru/pipeline-task-ado': '0.11.0',
+    '@4cloudguru/pipeline-task-ado': '0.11.1',
     '@4cloudguru/pipeline-task-core': '0.9.3',
 };
 
