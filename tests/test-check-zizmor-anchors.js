@@ -228,6 +228,15 @@ const CACHE = [finding('cache-poisoning', '.github/workflows/release.yml', 216, 
     report(/ghcr\.io\/zizmorcore\/zizmor:\$\{VERSION\}/.test(body),
         'the version is interpolated from the input, so it can be pinned to the lint\'s');
 
+    // SCOPE. The lint passes zizmor-action no path and therefore scans the
+    // whole repository. This shipped scanning `.github/`, which is narrower,
+    // and an action repo keeps its `action.yml` at the ROOT -- so a live
+    // `github-env: action.yml` ignore was reported dead because the only file
+    // that could satisfy it was never read. A narrower scope cannot cause a
+    // false pass, only a false failure, which is the expensive direction here.
+    report(/--\s*"\$ROOT"/.test(body) && !/\$ROOT\/\.github/.test(body),
+        'zizmor is pointed at the repository root, the same scope the lint uses');
+
     // Inputs must reach bash through env, never through ${{ }} spliced into the
     // run body — the template-injection class zizmor itself exists to refuse.
     const runBody = body.slice(body.indexOf('run: |'));

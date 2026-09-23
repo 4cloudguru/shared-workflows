@@ -123,6 +123,16 @@ runs:
         # same setting the lint uses, because every divergence is a way for
         # this gate to report a dead anchor that is not dead.
         #
+        # SCOPE IS PART OF THAT. The lint passes zizmor-action no path, so it
+        # scans the WHOLE REPOSITORY, and an action repo's `action.yml` sits at
+        # the root rather than under `.github/`. Scanning `.github/` here read
+        # narrower than the lint and reported sethbacon/setup-terraform-hardened's
+        # perfectly live `github-env: action.yml` ignore as dead, because the
+        # only file that could satisfy it was never looked at. A NARROWER SCOPE
+        # CANNOT PRODUCE A FALSE PASS, ONLY A FALSE FAILURE -- which is the
+        # expensive direction for a gate whose whole claim is that a red result
+        # means something.
+        #
         # Read-only mount: this step inspects, it does not fix.
         docker run --rm \
           --volume "$GITHUB_WORKSPACE:/workspace:ro" \
@@ -130,7 +140,7 @@ runs:
           --env "GH_TOKEN=${TOKEN}" \
           "ghcr.io/zizmorcore/zizmor:${VERSION}" \
           --no-ignores --no-exit-codes --format=json \
-          -- "$ROOT/.github/" \
+          -- "$ROOT" \
           > "$FINDINGS"
 
         # NO `|| true`, NO pipe, NO `set +e`. The gate's exit code IS the
