@@ -520,27 +520,103 @@ function walk(dir, out = []) {
 }
 
 /**
- * Returns a copy of `source` with every comment and string/template literal
- * blanked out (offsets preserved), so a sink NAME appearing in prose -- e.g. the
- * comment "Node's built-in fetch() buffers the whole body" -- is never counted as
- * a call. Argument text is still read from the ORIGINAL source.
+ * A `/` after one of these begins a regular expression: each may be followed by
+ * an operand. `<` may be too, but is left out: `</` closes a JSX element in
+ * every .tsx file this gate reads, and nothing it reads compares a value
+ * against a regex literal.
+ */
+const REGEX_AFTER_PUNCTUATORS = '(,=:[!&|?{};+-*%>~^';
+/** ... and after one of these keywords, which take one (`return /x/.test(s)`). */
+const REGEX_AFTER_KEYWORDS = new Set(['return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await']);
+
+/**
+ * End (exclusive) of the regular-expression literal whose opening `/` is at
+ * `slash`, or -1 when that `/` divides instead.
+ *
+ * Without this, the quote in `.replace(/"/g, '\\"')` reads as the start of a
+ * string and the lexer INVERTS: the code after it is blanked, and the contents
+ * of later strings are read as code, until some other quote happens to put it
+ * back. On 2026-09-26 that had blanked 5, 72 and 19 declaration heads in packer,
+ * terraform and release-docs. No sink sat in any of those regions, so the
+ * inventory was right by luck: a fetch() added to one would have left it with
+ * nothing failing, which is the failure this file exists to prevent.
+ *
+ * A literal can only start where an expression can, and that is decided by the
+ * previous significant token -- `prev` is the index of its last character, or
+ * -1 at the top of the text. After a punctuator that an operand may follow, or
+ * a keyword that takes one, `/` opens a literal; after an identifier, a number,
+ * a literal, `)` or `]`, it divides. A literal cannot span a line, so a `/` with
+ * no closing `/` on its own line divides whatever preceded it, which confines
+ * any misreading to that one line.
+ *
+ * JSX is where that confinement ran out. Every `</`, and every `/>` after an
+ * expression attribute, reads as the start of a literal by that rule: harmless
+ * while its line holds no second `/`, but on the lines of terraform's results
+ * tab that did, the "literal" swallowed markup, and on two of them a quote --
+ * desyncing text the old lexer had read correctly. Neither is read as one: `<`
+ * is not in the list above, and a `/>` after `}` ends an element. Measured
+ * against the TypeScript compiler over the three extensions, every `/` in code
+ * is then classified as the compiler classifies it.
+ */
+function regexLiteralEnd(source, slash, prev) {
+    if (prev >= 0) {
+        if (/[\w$]/.test(source[prev])) {
+            let start = prev;
+            while (start > 0 && /[\w$]/.test(source[start - 1])) start--;
+            // `x.return / 2` names a property, not the keyword.
+            if (source[start - 1] === '.' || !REGEX_AFTER_KEYWORDS.has(source.slice(start, prev + 1))) return -1;
+        } else if (!REGEX_AFTER_PUNCTUATORS.includes(source[prev]) || (source[prev] === '}' && source[slash + 1] === '>')) {
+            return -1;
+        }
+    }
+    let inClass = false;
+    for (let i = slash + 1; i < source.length; i++) {
+        let c = source[i];
+        if (c === '\\') c = source[++i];
+        else if (c === '[') inClass = true;
+        else if (c === ']') inClass = false;
+        else if (c === '/' && !inClass) {
+            let end = i + 1;
+            while (end < source.length && /[\w$]/.test(source[end])) end++;
+            return end;
+        }
+        if ('\n\r\u2028\u2029'.includes(c)) return -1;
+    }
+    return -1;
+}
+
+/**
+ * Returns a copy of `source` with every comment, string/template literal and
+ * regular-expression literal blanked out (offsets preserved), so a sink NAME
+ * appearing in prose -- e.g. the comment "Node's built-in fetch() buffers the
+ * whole body" -- is never counted as a call. Argument text is still read from
+ * the ORIGINAL source.
+ *
+ * A regex literal is blanked like any other literal: nothing below reads one,
+ * and a bracket inside it must not count towards a balanced scan. It has to be
+ * RECOGNISED either way, or a quote inside it opens a string (regexLiteralEnd()).
  */
 function maskCommentsAndStrings(source) {
     const out = source.split('');
-    let inLine = false, inBlock = false, quote = null;
+    let inLine = false, inBlock = false, quote = null, prev = -1;
     for (let i = 0; i < source.length; i++) {
         const c = source[i], next = source[i + 1];
         if (inLine) { if (c === '\n') inLine = false; else out[i] = ' '; continue; }
         if (inBlock) { if (c === '*' && next === '/') { out[i] = out[i + 1] = ' '; inBlock = false; i++; } else if (c !== '\n') out[i] = ' '; continue; }
         if (quote) {
             if (c === '\\') { out[i] = ' '; if (source[i + 1] !== '\n') out[i + 1] = ' '; i++; continue; }
-            if (c === quote) { out[i] = ' '; quote = null; continue; }
+            if (c === quote) { out[i] = ' '; quote = null; prev = i; continue; }
             if (c !== '\n') out[i] = ' ';
             continue;
         }
         if (c === '/' && next === '/') { out[i] = out[i + 1] = ' '; inLine = true; i++; continue; }
         if (c === '/' && next === '*') { out[i] = out[i + 1] = ' '; inBlock = true; i++; continue; }
         if (c === '"' || c === "'" || c === '`') { out[i] = ' '; quote = c; continue; }
+        if (c === '/') {
+            const end = regexLiteralEnd(source, i, prev);
+            if (end > 0) { out.fill(' ', i, end); i = end - 1; }
+        }
+        if (!/\s/.test(c)) prev = i;
     }
     return out.join('');
 }
@@ -615,22 +691,27 @@ function resolveOptionsText(source, callIndex, expr) {
 /**
  * Index of the `)` closing the `(` at `open`, or -1 when a different bracket
  * closes it first or the text runs out. Every bracket kind nests. Brackets in a
- * string, template or comment inside the list do not count, by the rules
- * maskCommentsAndStrings() applies -- but from `open`, not from the top of the
- * file, for the reason given on enclosingName().
+ * string, template, regular expression or comment inside the list do not
+ * count, by the rules maskCommentsAndStrings() applies -- but from `open`, not
+ * from the top of the file, for the reason given on enclosingName().
  */
 function closingParen(source, open) {
-    let depth = 0, quote = null;
+    let depth = 0, quote = null, prev = -1;
     for (let i = open; i < source.length; i++) {
         const c = source[i], next = source[i + 1];
         if (quote) {
             if (c === '\\') i++;
-            else if (c === quote) quote = null;
+            else if (c === quote) { quote = null; prev = i; }
             continue;
         }
         if (c === '/' && next === '/') { i = source.indexOf('\n', i); if (i < 0) return -1; continue; }
         if (c === '/' && next === '*') { i = source.indexOf('*/', i + 2); if (i < 0) return -1; i++; continue; }
         if (c === '"' || c === "'" || c === '`') { quote = c; continue; }
+        if (c === '/') {
+            const end = regexLiteralEnd(source, i, prev);
+            if (end > 0) i = end - 1;
+        }
+        if (!/\s/.test(c)) prev = i;
         if (c === '(' || c === '[' || c === '{') depth++;
         else if (c === ')' || c === ']' || c === '}') {
             depth--;
@@ -665,11 +746,13 @@ function closingParen(source, open) {
  * `(?:public|private|...|\s)*` could consume the front of a NAME, so a method
  * called privateKeyFor was reported as `KeyFor`.
  *
- * This reads the RAW source, not the masked copy the sinks are matched in:
- * maskCommentsAndStrings() has no regex-literal state, so a `.replace(/"/g, ...)`
- * opens a "string" that blanks the declarations after it (5, 72 and 19
- * declaration heads in packer, terraform and release-docs on 2026-09-26).
- * closingParen() skips strings and comments within the list instead.
+ * This reads the RAW source, not the masked copy the sinks are matched in, and
+ * closingParen() lexes each list from its own `(`, because both were written
+ * while maskCommentsAndStrings() had no regex-literal state: a
+ * `.replace(/"/g, ...)` opened a "string" that blanked the declarations after it
+ * (5, 72 and 19 declaration heads in packer, terraform and release-docs on
+ * 2026-09-26). The two now recognise a regex literal the same way, through
+ * regexLiteralEnd().
  */
 function enclosingName(source, index) {
     const head = source.slice(0, index);

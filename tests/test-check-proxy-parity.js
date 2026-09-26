@@ -432,6 +432,179 @@ if (process.env.CI) {
         `and the fixture enumerates exactly its ${expected.length} marked site(s), none of them a finding (got ${out.sites.length} site(s), ${out.failures} failure(s))`);
 }
 
+// ── 14. a regular-expression literal is a literal. maskCommentsAndStrings(),
+//       which every sink is matched through, had no state for one, so the
+//       quote in `.replace(/"/g, '\\"')` opened a "string" that ran on through
+//       the code after it, and every sink there left the inventory with
+//       nothing failing. None sat in such a region on 2026-09-26; 5, 72 and 19
+//       declaration heads in packer, terraform and release-docs did. Each file
+//       is a way a literal was misread, and each was watched failing against
+//       the old gate: the first four hid an UNPROXIED fetch(), default.ts hid
+//       a PROXIED one, and in encode.ts a bracket inside a literal closed the
+//       call early, so a correctly proxied fetch() was the one finding the old
+//       gate made here. Every file is String.raw, so what is written here is
+//       byte for byte what the gate reads.
+{
+    const sources = {
+        // terraform's escapeHclString (config-generator.ts), with a PROXIED
+        // site ahead of it that the old gate did see: only what follows the
+        // literal went missing.
+        'escape.ts': String.raw`export async function loadIndex(url: string): Promise<Response> {
+    return fetch(url, { ...buildFetchOptions() }); // expect PROXIED
+}
+
+export function escapeHclString(value: string): string {
+    return value.replace(/"/g, '\\"');
+}
+
+export async function loadMirror(url: string): Promise<Response> {
+    return fetch(url); // expect UNPROXIED
+}
+`,
+        // After a keyword rather than a punctuator.
+        'keyword.ts': String.raw`export function isQuoted(value: string): boolean {
+    return /^"/.test(value);
+}
+
+export async function loadQuoted(url: string): Promise<Response> {
+    return fetch(url); // expect UNPROXIED
+}
+`,
+        // No quote at all: the old lexer read the escaped `\/` and the closing
+        // `/` as `//`, a comment to the end of the line.
+        'scheme.ts': String.raw`export async function openLink(url: string): Promise<void> {
+    if (/^(https?:)?\/\//i.test(url)) await fetch(url); // expect UNPROXIED
+}
+`,
+        // A `/` inside a class does not close the literal.
+        'segment.ts': String.raw`export function lastSegment(url: string): string {
+    const m = /[^/"]+$/.exec(url);
+    return m ? m[0] : url;
+}
+
+export async function loadSegment(url: string): Promise<Response> {
+    return fetch(url); // expect UNPROXIED
+}
+`,
+        // PublishKbArticle's manifest.ts unquote pattern, as a default value.
+        // closingParen() has to read past it too, or the method goes
+        // unrecognised and its site is reported under `neighbour`.
+        'default.ts': String.raw`export class Manifest {
+    private neighbour(): void {}
+
+    async load(url: string, unquote = /^["']|["']$/g): Promise<Response> {
+        return fetch(url, { ...buildFetchOptions() }); // expect PROXIED
+    }
+}
+`,
+        // A literal left in the masked text still has its brackets counted:
+        // this `)` closed the call at `(url.replace(/\)` and the spread after
+        // it was never read.
+        'encode.ts': String.raw`export async function loadEncoded(url: string): Promise<Response> {
+    return fetch(url.replace(/\)/g, '%29'), { ...buildFetchOptions() }); // expect PROXIED
+}
+`,
+    };
+    const out = run(fixture('regex-literal', { sources }));
+    const expected = Object.entries(sources).flatMap(([file, body]) => body.split('\n')
+        .map((text, i) => ({ file, line: i + 1, verdict: (/\/\/ expect (\S+)/.exec(text) || [])[1] }))
+        .filter((e) => e.verdict !== undefined));
+    for (const e of expected) {
+        const site = out.sites.find((s) => s.rel.endsWith(`/src/${e.file}`) && s.line === e.line);
+        report(site !== undefined && site.verdict === e.verdict,
+            `${e.file}:${e.line} fetch() is enumerated ${e.verdict} (got ${site === undefined ? 'no site at that line' : site.verdict})`);
+    }
+    const load = out.sites.find((s) => s.rel.endsWith('/src/default.ts'));
+    report(load !== undefined && load.fn === 'load',
+        `default.ts fetch() is attributed to load, past the literal in its parameter list (got ${load === undefined ? 'no site' : load.fn})`);
+    const findings = expected.filter((e) => e.verdict === 'UNPROXIED').length;
+    report(expected.length === 7 && out.sites.length === expected.length && out.failures === findings,
+        `and the fixture enumerates exactly its ${expected.length} marked site(s), ${findings} of them a finding (got ${out.sites.length} site(s), ${out.failures} failure(s))`);
+}
+
+// ── 15. ...and only a literal is. A `/` that divides, or that delimits a JSX
+//       tag, must not open one: the "literal" runs to the next `/` on its line
+//       and takes everything between with it, a quote included. The old lexer
+//       read none of these as literals, so all of them pass against it. Each
+//       was watched failing under the mutation that reads it as one: no
+//       previous-token test, `.in` taken for the keyword, no stop at the end
+//       of the line, `<` put back in the list, no `} />` exception, and the
+//       previous token not taken from a closing quote -- in the masker, and
+//       separately in closingParen().
+{
+    const sources = {
+        // Division, twice on one line: read as a literal, the first runs to the
+        // second and takes the fetch() with it. `.in` is a property, not the
+        // keyword. A non-null `total!` does start a literal's scan -- a `!`
+        // negates as often as it asserts -- and only the end of its line ends it.
+        'ratio.ts': String.raw`export async function sendRatio(url: string, traffic: { in: number; out: number }): Promise<number> {
+    const ratio = traffic.in / traffic.out, res = await fetch(url, { ...buildFetchOptions() }), pct = ratio / 100; // expect PROXIED
+    return pct + res.status;
+}
+
+export async function average(url: string, total: number | undefined, count: number): Promise<number> {
+    const avg = total! / count;
+    const res = await fetch(url, { ...buildFetchOptions() }); // expect PROXIED
+    return avg + res.status;
+}
+`,
+        // A JSX closing tag. Read as a literal, `</b>` runs to the `/` in
+        // 'n/a' and swallows the quote that opens it.
+        'cell.tsx': String.raw`export function Cell({ text }: { text?: string }) {
+    return text ? <b>{text}</b> : <i>{'n/a'}</i>;
+}
+
+export async function loadCell(url: string): Promise<Response> {
+    return fetch(url, { ...buildFetchOptions() }); // expect PROXIED
+}
+`,
+        // A self-closing element after an expression attribute, likewise.
+        'count.tsx': String.raw`export function Count({ count }: { count: number }) {
+    return <span><Badge value={count} />{' / '}</span>;
+}
+
+export async function loadCount(url: string): Promise<Response> {
+    return fetch(url, { ...buildFetchOptions() }); // expect PROXIED
+}
+`,
+        // After an attribute STRING the previous token is the quote closing
+        // it, not the `=` before it.
+        'icon.tsx': String.raw`export function Separator() {
+    return <span><Icon name="slash" />{' / '}</span>;
+}
+
+export async function loadIcon(url: string): Promise<Response> {
+    return fetch(url, { ...buildFetchOptions() }); // expect PROXIED
+}
+`,
+        // The same in a parameter list, which closingParen() reads by the same
+        // rule: misread there, the method goes unrecognised and its site is
+        // reported under `neighbour`.
+        'row.tsx': String.raw`export class Rows {
+    private neighbour(): void {}
+
+    render({ icon = <Icon name="dot" />, label = 'n/a' }: RowProps) {
+        return fetch(label, { ...buildFetchOptions() }); // expect PROXIED
+    }
+}
+`,
+    };
+    const out = run(fixture('only-a-literal', { sources }));
+    const expected = Object.entries(sources).flatMap(([file, body]) => body.split('\n')
+        .map((text, i) => ({ file, line: i + 1, verdict: (/\/\/ expect (\S+)/.exec(text) || [])[1] }))
+        .filter((e) => e.verdict !== undefined));
+    for (const e of expected) {
+        const site = out.sites.find((s) => s.rel.endsWith(`/src/${e.file}`) && s.line === e.line);
+        report(site !== undefined && site.verdict === e.verdict,
+            `${e.file}:${e.line} fetch() is enumerated ${e.verdict} (got ${site === undefined ? 'no site at that line' : site.verdict})`);
+    }
+    const render = out.sites.find((s) => s.rel.endsWith('/src/row.tsx'));
+    report(render !== undefined && render.fn === 'render',
+        `row.tsx fetch() is attributed to render, past the JSX default in its parameter list (got ${render === undefined ? 'no site' : render.fn})`);
+    report(expected.length === 6 && out.sites.length === expected.length && out.failures === 0,
+        `and the fixture enumerates exactly its ${expected.length} marked site(s), none of them a finding (got ${out.sites.length} site(s), ${out.failures} failure(s))`);
+}
+
 // ── the ACTION's own run body, not just the script it calls ─────────────────
 //
 // Everything above drives the gate directly, which is the half a consumer never
