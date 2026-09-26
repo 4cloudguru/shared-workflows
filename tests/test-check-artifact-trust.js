@@ -8,10 +8,12 @@
 // at its origin/main, with ONE logic edit: the path the gate is resolved from
 // (see ACTION_DIR below). Canonical is the parent of the script this action
 // ships and of this suite; a case rewritten here rather than there is drift in
-// the same way a re-worded comment in the gate is. The two sections below that
-// banner are additive and belong only here: one is a suite that used to live in
-// a consumer's task tests and has no home in the consumer once the gate leaves,
-// the other tests action.yml — a file canonical does not have.
+// the same way a re-worded comment in the gate is. The sections below that
+// banner are additive. One is a suite that used to live in a consumer's task
+// tests and has no home in the consumer once the gate leaves; one pins how the
+// gate names the unit a site belongs to, and is canonical's to adopt when the
+// gate is next re-mirrored; the last tests action.yml — a file canonical does
+// not have.
 //
 // ── canonical's own header follows ─────────────────────────────────────────
 //
@@ -311,6 +313,149 @@ fixture({
     admit('downloadWithCrossFileReverify')?.verdict)
   check(code === 1, 'and the blind sibling still fails the gate over that tree', code)
   fs.rmSync(dir, { recursive: true, force: true })
+}
+
+// ── a site belongs to the unit that CONTAINS it ─────────────────────────────
+//
+// The gate named a block from the two lines above its `{`. A signature wrapped
+// over three or more lines left no name there, and a class body's header
+// (`export class Bad`) matched neither pattern, so both were `<anonymous>` --
+// which every pass skips. The same unverified download written three ways
+// therefore gave one ACQUIRE row and two exits of 0 with no row at all: the
+// gate green over exactly the artifact it exists to refuse. Every case below
+// was watched failing against that gate before the fix.
+{
+  const trees = []
+  /** A tree with one task whose src/ holds `sources`; left for the cleanup below. */
+  const tree = (sources) => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-trust-units-')))
+    trees.push(root)
+    const dir = path.join(root, 'Tasks', 'Fixture', 'FixtureV1')
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'fixture' }))
+    for (const [file, body] of Object.entries(sources)) fs.writeFileSync(path.join(dir, 'src', file), body)
+    return root
+  }
+  const rowsOf = (body, kind) => (body && Array.isArray(body.sites) ? body.sites.filter((s) => s.kind === kind) : [])
+  const show = (rows) => JSON.stringify(rows.map((r) => `${r.fn} ${r.verdict} ${r.rel.split('/').pop()}:${r.line}`))
+
+  const TL = "import * as tl from 'azure-pipelines-tool-lib/tool';\n"
+  const good = `${TL}export async function good(v: string, discardLog: (m: string) => void): Promise<string> {
+    const p = await tl.downloadTool('https://releases.example.com/a.zip');
+    await discardArtifactOnFailure(p, () => verifySha256(p, v), discardLog);
+    return p;
+}
+`
+  const forms = {
+    'on one line': `${TL}export async function bad(version: string, arch: string): Promise<string> { return tl.downloadTool('https://releases.example.com/b.zip'); }\n`,
+    'with its signature wrapped over four lines': `${TL}export async function bad(
+    version: string,
+    arch: string,
+): Promise<string> {
+    return tl.downloadTool('https://releases.example.com/b.zip');
+}
+`,
+    'as a method of an exported class': `${TL}export class Bad {
+    async bad(version: string, arch: string): Promise<string> {
+        return tl.downloadTool('https://releases.example.com/b.zip');
+    }
+}
+`,
+  }
+  console.log('\na site belongs to the unit that contains it')
+  for (const [form, bad] of Object.entries(forms)) {
+    const { code, body } = run(tree({ 'good.ts': good, 'bad.ts': bad }))
+    const bads = rowsOf(body, 'ACQUIRE').filter((r) => r.rel.endsWith('/bad.ts'))
+    check(bads.length === 1 && bads[0].fn === 'bad' && bads[0].verdict === 'UNVERIFIED',
+      `an unverified download ${form} is ACQUIRE bad UNVERIFIED -- named after the function or method that owns it`, show(bads))
+    check(code === 1, `and fails the gate (${form})`, code)
+  }
+
+  // Two classes, each with a `fetch` that downloads and a `check`. Only one
+  // `check` verifies. A member is reached through `this.` and resolved within
+  // its own class, so each `fetch` is verdicted on its own class's `check` --
+  // resolving by name alone would let Unchecked borrow Checked's verification.
+  {
+    const { body } = run(tree({
+      'classes.ts': `${TL}export class Checked {
+    async fetch(v: string, discardLog: (m: string) => void): Promise<string> {
+        const p = await tl.downloadTool('https://releases.example.com/c.zip');
+        await this.check(p, v, discardLog);
+        return p;
+    }
+
+    private async check(p: string, v: string, discardLog: (m: string) => void): Promise<void> {
+        await discardArtifactOnFailure(p, () => verifySha256(p, v), discardLog);
+    }
+}
+
+export class Unchecked {
+    async fetch(v: string): Promise<string> {
+        return tl.downloadTool('https://releases.example.com/u.zip');
+    }
+
+    private async check(p: string): Promise<void> {
+        void p;
+    }
+}
+`,
+    }))
+    const acquire = rowsOf(body, 'ACQUIRE')
+    check(acquire.length === 2 && acquire[0].fn === 'fetch' && acquire[0].verdict === 'VERIFIED' && acquire[0].line === 4,
+      "a method that reaches a verifier through this.check() is VERIFIED", show(acquire))
+    check(acquire[1]?.fn === 'fetch' && acquire[1]?.verdict === 'UNVERIFIED' && acquire[1]?.line === 16,
+      "while the same-named method of another class, whose check() verifies nothing, is UNVERIFIED", show(acquire))
+    const verify = rowsOf(body, 'VERIFY')
+    check(verify.length === 1 && verify[0].fn === 'check' && verify[0].verdict === 'DISCARDS-ON-FAILURE',
+      'and the verification itself is a VERIFY row of the member that performs it', show(verify))
+  }
+
+  // A parameter typed as a callback puts a `)` inside the list, and reading the
+  // list as `[^)]*` stopped there: `url` was lost, so fetchWith was not seen to
+  // be a wrapper -- it failed as UNVERIFIED itself, and the install that does
+  // verify what it fetched was never enumerated at all.
+  {
+    const { code, body } = run(tree({
+      'wrapper.ts': `${TL}export async function fetchWith(onProgress: (received: number) => void, url: string): Promise<string> {
+    return tl.downloadTool(url);
+}
+
+export async function install(v: string, discardLog: (m: string) => void): Promise<string> {
+    const p = await fetchWith(() => undefined, 'https://releases.example.com/d.zip');
+    await discardArtifactOnFailure(p, () => verifySha256(p, v), discardLog);
+    return p;
+}
+`,
+    }))
+    const acquire = rowsOf(body, 'ACQUIRE')
+    check(acquire.find((r) => r.fn === 'fetchWith')?.verdict === 'EXEMPT-DELEGATES-TO-CALLER',
+      'a wrapper whose URL follows a callback-typed parameter is recognised as a wrapper', show(acquire))
+    check(acquire.find((r) => r.fn === 'install')?.verdict === 'VERIFIED',
+      'and its caller, which verifies, is enumerated as the ACQUIRE site', show(acquire))
+    check(code === 0, 'and the tree passes', code)
+  }
+
+  // The window also lent a `const` on the line above to a block that was not
+  // its own. A block no declaration owns is `<module>`, and is still verdicted.
+  // An interface's method signature holds no code, so it is no download.
+  {
+    const { code, body } = run(tree({
+      'prefetch.ts': `${TL}const MIRROR = 'https://releases.example.com';
+if (process.env.PREFETCH) {
+    void tl.downloadTool(\`\${MIRROR}/pre.zip\`);
+}
+
+export interface Fetcher {
+    downloadTool(url: string): Promise<string>;
+}
+`,
+    }))
+    const acquire = rowsOf(body, 'ACQUIRE')
+    check(acquire.length === 1 && acquire[0].fn === '<module>' && acquire[0].verdict === 'UNVERIFIED' && acquire[0].line === 4,
+      "a download in a top-level block is <module>'s, not the const declared on the line above it -- and the interface signature is not a site", show(acquire))
+    check(code === 1, 'and it still fails the gate', code)
+  }
+  for (const root of trees) fs.rmSync(root, { recursive: true, force: true })
 }
 
 // ── the ACTION's own run body, not just the script it calls ─────────────────
