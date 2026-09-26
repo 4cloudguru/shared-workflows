@@ -613,6 +613,34 @@ function resolveOptionsText(source, callIndex, expr) {
 }
 
 /**
+ * Index of the `)` closing the `(` at `open`, or -1 when a different bracket
+ * closes it first or the text runs out. Every bracket kind nests. Brackets in a
+ * string, template or comment inside the list do not count, by the rules
+ * maskCommentsAndStrings() applies -- but from `open`, not from the top of the
+ * file, for the reason given on enclosingName().
+ */
+function closingParen(source, open) {
+    let depth = 0, quote = null;
+    for (let i = open; i < source.length; i++) {
+        const c = source[i], next = source[i + 1];
+        if (quote) {
+            if (c === '\\') i++;
+            else if (c === quote) quote = null;
+            continue;
+        }
+        if (c === '/' && next === '/') { i = source.indexOf('\n', i); if (i < 0) return -1; continue; }
+        if (c === '/' && next === '*') { i = source.indexOf('*/', i + 2); if (i < 0) return -1; i++; continue; }
+        if (c === '"' || c === "'" || c === '`') { quote = c; continue; }
+        if (c === '(' || c === '[' || c === '{') depth++;
+        else if (c === ')' || c === ']' || c === '}') {
+            depth--;
+            if (depth === 0) return c === ')' ? i : -1;
+        }
+    }
+    return -1;
+}
+
+/**
  * Nearest enclosing FUNCTION name -- the unit that owns the decision to proxy.
  *
  * Only declarations that actually introduce a function count. An earlier
@@ -620,24 +648,63 @@ function resolveOptionsText(source, callIndex, expr) {
  * variable the response was assigned to (`response() -> fetch()`) instead of the
  * method containing it, so two different call sites in one method were
  * indistinguishable.
+ *
+ * A parameter list is read by BALANCED scanning, never `[^)]*`. That pattern
+ * stops at the first `)`, and a callback parameter (`isStale: () => boolean`), a
+ * parenthesised type or a default value that calls something puts one INSIDE the
+ * list -- so the method was not recognised at all, and every call site in it was
+ * attributed to the nearest EARLIER declaration that was. Nothing failed:
+ * sethbacon/azure-pipelines-terraform#1187 reported both fetch() sites in
+ * loadDigestItems/loadRawAttachments as renderLegacyRawFallback, and the class
+ * test's only complaint was a site table that no longer matched -- an invitation
+ * to record the wrong name. So a pattern that has to read past a list is a head
+ * up to its `(`, closingParen() for the list, and a sticky tail anchored at the
+ * `)` for what must follow it for the name to be a function and not a call.
+ *
+ * Each modifier must be followed by whitespace. An earlier revision's
+ * `(?:public|private|...|\s)*` could consume the front of a NAME, so a method
+ * called privateKeyFor was reported as `KeyFor`.
+ *
+ * This reads the RAW source, not the masked copy the sinks are matched in:
+ * maskCommentsAndStrings() has no regex-literal state, so a `.replace(/"/g, ...)`
+ * opens a "string" that blanks the declarations after it (5, 72 and 19
+ * declaration heads in packer, terraform and release-docs on 2026-09-26).
+ * closingParen() skips strings and comments within the list instead.
  */
 function enclosingName(source, index) {
     const head = source.slice(0, index);
-    const patterns = [
-        /(?:^|\n)\s*(?:export\s+)?(?:public|private|protected|static|\s)*(?:async\s+)?function\s+(\w+)\s*[<(]/g,
-        // `const foo = () => {}` / `const foo = async function ...` only.
-        /(?:^|\n)\s*(?:export\s+)?(?:const|let)\s+(\w+)\s*(?::[^=;]*)?=\s*(?:async\s+)?(?:function\b|(?:<[^>]*>)?\([^)]*\)\s*(?::[^=]+)?=>|\w+\s*=>)/g,
-        // Class methods and object-literal methods.
-        /(?:^|\n)\s*(?:public|private|protected|static|readonly|\s)*(?:async\s+)?(\w+)\s*(?:<[^>(]*>)?\([^)]*\)\s*(?::[^{;=]+)?\{/g,
+    const found = [];
+    // `function foo(`: the keyword decides it, so the list is never read.
+    const keyword = /(?:^|\n)\s*(?:export\s+)?(?:public|private|protected|static|\s)*(?:async\s+)?function\s+(\w+)\s*[<(]/g;
+    for (const m of head.matchAll(keyword)) found.push({ name: m[1], at: m.index });
+    const listed = [
+        {
+            // `const foo = (...) =>`, and the two forms with no list to read,
+            // `const foo = async function` and `const foo = x =>` (group 2).
+            re: /(?:^|\n)\s*(?:export\s+)?(?:const|let)\s+(\w+)\s*(?::[^=;]*)?=\s*(?:async\s+)?(?:(function\b|\w+\s*=>)|(?:<[^>]*>)?\()/g,
+            tail: /\s*(?::[^=]+)?=>/y,
+        },
+        {
+            // Class methods and object-literal methods: `foo(...) {` or
+            // `foo(...): T {`. The return type may be a function type
+            // (`(): () => void {`), so `=>` is allowed in it; `}` is not, so a
+            // bodiless signature cannot run on to borrow a later block's `{`.
+            re: /(?:^|\n)\s*(?:(?:public|private|protected|static|readonly|override|async)\s+)*(\w+)\s*(?:<[^>(]*>)?\(/g,
+            tail: /\s*(?::(?:[^{};=]|=>)+)?\{/y,
+        },
     ];
-    let best = { name: '<module>', at: -1 };
-    for (const re of patterns) {
-        let m;
-        while ((m = re.exec(head)) !== null) {
-            if (m.index > best.at && !['if', 'for', 'while', 'switch', 'catch', 'return', 'function'].includes(m[1])) {
-                best = { name: m[1], at: m.index };
-            }
+    for (const { re, tail } of listed) {
+        for (const m of head.matchAll(re)) {
+            if (m[2]) { found.push({ name: m[1], at: m.index }); continue; }
+            const close = closingParen(head, m.index + m[0].length - 1);
+            if (close < 0) continue;
+            tail.lastIndex = close + 1;
+            if (tail.test(head)) found.push({ name: m[1], at: m.index });
         }
+    }
+    let best = { name: '<module>', at: -1 };
+    for (const f of found) {
+        if (f.at > best.at && !['if', 'for', 'while', 'switch', 'catch', 'return', 'function'].includes(f.name)) best = f;
     }
     return best.name;
 }
