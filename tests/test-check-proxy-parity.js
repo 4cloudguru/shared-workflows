@@ -359,6 +359,79 @@ export async function generateIdToken(id: string): Promise<string> {
         `a range where an exact x.y.z belongs -> exit 2, not a floor guessed at (exit ${r.status})`);
 }
 
+// ── 13. a site's `fn` is the function that CONTAINS it, whatever its parameter
+//       list holds. The method pattern read a list as `[^)]*`, which stops at
+//       the first `)`, so a callback parameter made the whole method invisible
+//       and its fetch() was reported under the nearest EARLIER declaration --
+//       no finding, exit 0 (sethbacon/azure-pipelines-terraform#1187 reported
+//       loadDigestItems and loadRawAttachments as renderLegacyRawFallback, and
+//       the class test asked for the wrong name to be recorded). Each fetch()
+//       carries the name it must be reported under, and each was watched
+//       reporting another before the fix: `neighbour`, which every file opens
+//       with because it is what the wrong answer borrows, a truncated `KeyFor`,
+//       or a bodiless interface member.
+{
+    const sources = {
+        'loader.ts': `export class Loader {
+    private neighbour(items: string[]): string {
+        return items.join(',');
+    }
+
+    private async loadOne(url: string, isStale: () => boolean): Promise<void> {
+        if (isStale()) return;
+        await fetch(url, { ...buildFetchOptions() }); // expect loadOne
+    }
+
+    private async loadMany(
+        urls: string[],
+        onEach: (url: string, index: number) => void,
+        isStale: () => boolean,
+    ): Promise<void> {
+        for (const url of urls) {
+            if (isStale()) break;
+            await fetch(url, { ...buildFetchOptions() }); // expect loadMany
+        }
+    }
+
+    publicKeyFor(url: string): Promise<Response> {
+        return fetch(url, { ...buildFetchOptions() }); // expect publicKeyFor
+    }
+}
+`,
+        // The arrow pattern had the same `[^)]*`; a callback type happened to
+        // survive it only because its first `)` is followed by `=>`.
+        'arrow.ts': `export function neighbour(): void {}
+
+export const loadBefore = async (url: string, deadline = Date.now() + 30000): Promise<void> => {
+    await fetch(url, { ...buildFetchOptions() }); // expect loadBefore
+};
+`,
+        // The return-type tail now admits `=>`, so it is bounded at `}`: a
+        // bodiless member with no semicolon must not run out of its interface
+        // and claim the next block's `{` as its body.
+        'shape.ts': `export interface Shape {
+    area(): number
+    label(): string
+}
+
+if (process.env.CI) {
+    void fetch(url, { ...buildFetchOptions() }); // expect <module>
+}
+`,
+    };
+    const out = run(fixture('enclosing-name', { sources }));
+    const expected = Object.entries(sources).flatMap(([file, body]) => body.split('\n')
+        .map((text, i) => ({ file, line: i + 1, fn: (/\/\/ expect (\S+)/.exec(text) || [])[1] }))
+        .filter((e) => e.fn !== undefined));
+    for (const e of expected) {
+        const site = out.sites.find((s) => s.rel.endsWith(`/src/${e.file}`) && s.line === e.line);
+        report(site !== undefined && site.fn === e.fn,
+            `${e.file}:${e.line} fetch() is attributed to ${e.fn} (got ${site === undefined ? 'no site at that line' : site.fn})`);
+    }
+    report(expected.length === 5 && out.sites.length === expected.length && out.failures === 0,
+        `and the fixture enumerates exactly its ${expected.length} marked site(s), none of them a finding (got ${out.sites.length} site(s), ${out.failures} failure(s))`);
+}
+
 // ── the ACTION's own run body, not just the script it calls ─────────────────
 //
 // Everything above drives the gate directly, which is the half a consumer never
