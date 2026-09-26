@@ -31,6 +31,11 @@
 // The vacuity guards are cases too: this gate exits non-zero over a tree with no
 // source files and over a tree with no sink, because a green earned by walking
 // nothing is the failure mode the whole apparatus refuses.
+//
+// WHERE A SITE BELONGS is cases 5 to 7: the unit a sink is attributed to is the
+// one whose authorization decides it, so a class method, a wrapped signature and
+// a parameter list behind a callback type are each read the way the code is
+// written, and a unit that takes its authorizer from its callers is held to them.
 
 const fs = require('fs');
 const os = require('os');
@@ -208,6 +213,243 @@ const verdictOf = (body, fn) => (body && body.sites || []).filter((s) => s.fn ==
         `a tree with source but no outbound sink refuses to pass (exit ${noSinks.status})`);
 }
 
+// ── 5. a site's `fn` is the unit that CONTAINS it ───────────────────────────
+//
+// A block was named after the nearest `function` or `const` declared within
+// 2000 characters above its `{`, and `class` was not a declaration. So a class
+// body either had no name and was skipped, sinks and all, or borrowed one: the
+// `const url` inside the function above it, or a module constant. Each check
+// here was watched failing against that gate, except the three marked sites
+// it already named -- `authorized`, `wrapped`, `generic` -- which are guards.
+{
+    // The class comes FIRST: nothing above it to borrow, so the whole class was
+    // skipped and one authorized function made the tree pass.
+    const first = run(fixture('class-first', {
+        'dl.ts': [
+            "import { assertEgressHostAllowed } from './guards';",
+            '',
+            'export class Mirror {',
+            '    async fetch(mirror: string): Promise<void> {',
+            "        const url = new URL('/tool.zip', mirror).toString();",
+            '        await downloadToFile(url);',
+            '    }',
+            '}',
+            '',
+            'export async function pull(mirror: string): Promise<void> {',
+            "    const url = new URL('/pkg.zip', mirror).toString();",
+            '    await assertEgressHostAllowed(new URL(url).hostname);',
+            '    await downloadToFile(url);',
+            '}',
+            '',
+        ].join('\n'),
+    }));
+    report(verdictOf(first.body, 'fetch').join() === 'UNAUTHORIZED' && first.status === 1,
+        `an unauthorized download in a class method is a site, named after the method, and fails the gate (got ${JSON.stringify(verdictOf(first.body, 'fetch'))}, exit ${first.status})`);
+
+    const constant = run(fixture('class-under-a-const', {
+        'dl.ts': [
+            'const TIMEOUT_MS = 30000;',
+            'export class Puller {',
+            '    async pull(mirror: string): Promise<void> {',
+            "        const url = new URL('/pkg.zip', mirror).toString();",
+            '        await downloadToFile(url);',
+            '    }',
+            '}',
+            '',
+        ].join('\n'),
+    }));
+    report(verdictOf(constant.body, 'pull').join() === 'UNAUTHORIZED' && verdictOf(constant.body, 'TIMEOUT_MS').length === 0,
+        `a class under a module constant does not borrow the constant's name (pull: ${JSON.stringify(verdictOf(constant.body, 'pull'))}, TIMEOUT_MS: ${JSON.stringify(verdictOf(constant.body, 'TIMEOUT_MS'))})`);
+
+    // Each sink carries the unit it must be reported under. `authorized` comes
+    // first, so the class after it used to borrow `url` from inside it; the
+    // interface's signature, named like a sink, used to be one.
+    const sources = {
+        'shapes.ts': `import { assertEgressHostAllowed } from './guards';
+
+export async function authorized(mirror: string): Promise<void> {
+    const url = new URL('/a.zip', mirror).toString();
+    await assertEgressHostAllowed(new URL(url).hostname);
+    await downloadToFile(url); // expect authorized AUTHORIZED
+}
+
+export class After {
+    private readonly retries = 3;
+
+    constructor(private readonly mirror: string) {}
+
+    async pull(): Promise<void> {
+        const url = new URL('/b.zip', this.mirror).toString();
+        await downloadToFile(url); // expect pull UNAUTHORIZED
+    }
+
+    get manifest(): Promise<unknown> {
+        return fetchJson(new URL('/index.json', this.mirror).toString()); // expect manifest UNAUTHORIZED
+    }
+}
+
+export interface Transport {
+    fetchJson(url: string): Promise<unknown>;
+}
+
+export async function wrapped(
+    mirror: string,
+    name: string,
+): Promise<void> {
+    const url = new URL(name, mirror).toString();
+    await downloadToFile(url); // expect wrapped UNAUTHORIZED
+}
+
+export const generic = <K, V>(mirror: K, name: V): Promise<void> => {
+    return downloadToFile(new URL(String(name), String(mirror)).toString()); // expect generic UNAUTHORIZED
+};
+`,
+    };
+    const out = run(fixture('enclosing-unit', sources));
+    const expected = Object.entries(sources).flatMap(([file, body]) => body.split('\n')
+        .map((text, i) => ({ file, line: i + 1, want: /\/\/ expect (\S+) (\S+)/.exec(text) }))
+        .filter((e) => e.want !== null));
+    const sites = (out.body && out.body.sites) || [];
+    for (const e of expected) {
+        const site = sites.find((s) => s.rel.endsWith(`/src/${e.file}`) && s.line === e.line);
+        report(site !== undefined && site.fn === e.want[1] && site.verdict === e.want[2],
+            `${e.file}:${e.line} is ${e.want[1]} ${e.want[2]} (got ${site === undefined ? 'no site at that line' : `${site.fn} ${site.verdict}`})`);
+    }
+    report(expected.length === 5 && sites.length === expected.length,
+        `and the tree enumerates exactly its ${expected.length} marked sites -- the interface signature is none of them (got ${sites.length})`);
+}
+
+// ── 6. a parameter list is read by a balanced scan ──────────────────────────
+//
+// Read as `[^)]*` and split at every comma, a list stopped at a callback type's
+// first `)` and split inside `Map<K, V>`. A wrapper's URL then sat at the wrong
+// POSITION, and the position is what its callers are verdicted by.
+{
+    // `url` read as the third parameter: the caller's constant fallback was
+    // judged in place of its attacker-reachable URL, and the tree passed.
+    const shifted = run(fixture('generic-before-url', {
+        'dl.ts': [
+            'export async function fetchWith(headers: Map<string, string>, url: string, fallback: string): Promise<void> {',
+            '    await downloadToFile(url);',
+            '}',
+            '',
+            'export async function pull(mirror: string): Promise<void> {',
+            "    const target = new URL('/pkg.zip', mirror).toString();",
+            "    await fetchWith(new Map(), target, 'https://releases.example.com/pkg.zip');",
+            '}',
+            '',
+        ].join('\n'),
+    }));
+    report(verdictOf(shifted.body, 'pull').join() === 'UNAUTHORIZED' && shifted.status === 1,
+        `a URL behind a Map<K, V> parameter is judged, not the constant after it (got ${JSON.stringify(verdictOf(shifted.body, 'pull'))}, exit ${shifted.status})`);
+
+    // `url` lost after a callback-typed parameter: fetchVia was not seen to be a
+    // wrapper and failed on its own, while the caller that authorizes the host
+    // was never looked at. (The callback is passed by name: an arrow written
+    // into a sink's arguments is read as its per-hop callback, case 3.)
+    const callback = run(fixture('callback-before-url', {
+        'dl.ts': [
+            "import { assertEgressHostAllowed } from './guards';",
+            '',
+            'function quiet(received: number): void {',
+            '    void received;',
+            '}',
+            '',
+            'export async function fetchVia(onProgress: (received: number) => void, url: string): Promise<void> {',
+            '    await downloadToFile(url);',
+            '}',
+            '',
+            'export async function pull(mirror: string): Promise<void> {',
+            "    const target = new URL('/pkg.zip', mirror).toString();",
+            '    await assertEgressHostAllowed(new URL(target).hostname);',
+            '    await fetchVia(quiet, target);',
+            '}',
+            '',
+        ].join('\n'),
+    }));
+    report(verdictOf(callback.body, 'pull').join() === 'AUTHORIZED' && verdictOf(callback.body, 'fetchVia').length === 0
+        && callback.status === 0,
+        `a wrapper whose URL follows a callback-typed parameter delegates to its caller (pull: ${JSON.stringify(verdictOf(callback.body, 'pull'))}, fetchVia: ${JSON.stringify(verdictOf(callback.body, 'fetchVia'))}, exit ${callback.status})`);
+
+    // The helper a URL is built by is looked up the same way.
+    const helper = run(fixture('helper-with-callback', {
+        'dl.ts': [
+            'function newest(versions: string[]): string {',
+            '    return versions[0];',
+            '}',
+            '',
+            'function releaseUrl(pick: (versions: string[]) => string, opts: { channel?: string }): string {',
+            '    return `https://releases.example.com/${pick([])}/${opts.channel}/tool.zip`;',
+            '}',
+            '',
+            'export async function install(): Promise<void> {',
+            "    await downloadToFile(releaseUrl(newest, { channel: 'stable' }));",
+            '}',
+            '',
+        ].join('\n'),
+    }));
+    report(verdictOf(helper.body, 'install').join() === 'EXEMPT-CONSTANT-HOST' && helper.status === 0,
+        `a constant host built by a helper with a callback-typed parameter is resolved (got ${JSON.stringify(verdictOf(helper.body, 'install'))}, exit ${helper.status})`);
+}
+
+// ── 7. an injected authorizer binds every unit that declares one ────────────
+//
+// A unit that authorizes by awaiting an authorizer its caller passes is only
+// authorized if every caller passes the real one. The callers were found by
+// reading the name off `function x(` alone: a `const` arrow or a class method
+// could declare the parameter, be handed a no-op, and still read as AUTHORIZED.
+{
+    const out = run(fixture('injected-authorizer', {
+        'registry.ts': [
+            "import { assertEgressHostAllowed } from './guards';",
+            '',
+            'export class Registry {',
+            '    async resolve(mirror: string, authorize: (hostname: string) => Promise<void>): Promise<void> {',
+            "        const url = new URL('/index.json', mirror).toString();",
+            '        await authorize(new URL(url).hostname);',
+            '        await downloadToFile(url);',
+            '    }',
+            '',
+            '    async latest(mirror: string): Promise<void> {',
+            '        await this.resolve(mirror, async () => undefined);',
+            '    }',
+            '',
+            '    async checked(mirror: string): Promise<void> {',
+            '        await this.resolve(mirror, (host) => assertEgressHostAllowed(host));',
+            '    }',
+            '}',
+            '',
+            'export interface Resolver {',
+            '    resolve(mirror: string, authorize: (hostname: string) => Promise<void>): Promise<void>;',
+            '}',
+            '',
+        ].join('\n'),
+        'resolve-from.ts': [
+            "import { assertEgressHostAllowed } from './guards';",
+            '',
+            'export const resolveFrom = async (mirror: string, authorize: (hostname: string) => Promise<void>): Promise<void> => {',
+            "    const url = new URL('/index.json', mirror).toString();",
+            '    await authorize(new URL(url).hostname);',
+            '    await downloadToFile(url);',
+            '};',
+            '',
+            'export async function useConst(mirror: string): Promise<void> {',
+            '    await resolveFrom(mirror, async () => undefined);',
+            '}',
+            '',
+            'export async function useConstChecked(mirror: string): Promise<void> {',
+            '    await resolveFrom(mirror, (host) => assertEgressHostAllowed(host));',
+            '}',
+            '',
+        ].join('\n'),
+    }));
+    const refused = ((out.body && out.body.suspects) || []).map((s) => s.replace(/^.*\/src\//, '').replace(/ requires.*$/, '')).sort();
+    report(verdictOf(out.body, 'resolve').join() === 'AUTHORIZED' && verdictOf(out.body, 'resolveFrom').join() === 'AUTHORIZED',
+        `a method and a const that await an injected authorizer are AUTHORIZED at their own sinks (resolve: ${JSON.stringify(verdictOf(out.body, 'resolve'))}, resolveFrom: ${JSON.stringify(verdictOf(out.body, 'resolveFrom'))})`);
+    report(refused.join() === 'registry.ts:11: resolve(),resolve-from.ts:10: resolveFrom()' && out.status === 1,
+        `so the two callers that hand them a no-op are refused -- and neither the callers that pass the real one, nor the method's own declaration, nor the interface signature is (got ${JSON.stringify(refused)}, exit ${out.status})`);
+}
+
 fs.rmSync(scratch, { recursive: true, force: true });
 
 // ── the ACTION's own run: body, not only the script it calls ────────────────
@@ -299,7 +541,7 @@ fs.rmSync(scratch, { recursive: true, force: true });
         'a gate missing from the action path fails with an error naming it');
 }
 
-const ASSERTION_FLOOR = 21;
+const ASSERTION_FLOOR = 36;
 if (assertions < ASSERTION_FLOOR) {
     console.error(`  FAIL only ${assertions} assertion(s) ran (floor ${ASSERTION_FLOOR}); a case was skipped`);
     failures += 1;

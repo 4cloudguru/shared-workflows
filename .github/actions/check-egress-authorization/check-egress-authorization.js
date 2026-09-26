@@ -114,35 +114,6 @@ function invokesInjectedAuthorizer(fn) {
     return authorizerParams(fn.header).some(p => new RegExp(`await\\s+${p}\\s*\\(`).test(fn.text));
 }
 
-/**
- * Finds where a function's header begins, so a sink can be attributed to the name
- * responsible for authorizing it.
- *
- * Anchors on the declaration keyword rather than counting lines back from the
- * opening brace. Reading a fixed two lines back meant a signature wrapped over
- * more lines parsed as <anonymous> and every sink inside it was skipped --
- * wrapping a signature silently removed its egress sites from this gate. Walking
- * back to the previous statement boundary instead is wrong too: a return type
- * like Promise<{ path: string }> puts a brace between the name and the body.
- */
-const DECLARATION = /(?:export\s+)?(?:async\s+)?function\s+\w+\s*\(|(?:export\s+)?(?:const|let|var)\s+\w+\s*[:=]/g;
-
-function headerStart(source, openIndex) {
-    const windowStart = Math.max(0, openIndex - 2000);
-    const slice = source.slice(windowStart, openIndex);
-    let last = -1;
-    DECLARATION.lastIndex = 0;
-    let m;
-    while ((m = DECLARATION.exec(slice)) !== null) last = m.index;
-    if (last >= 0) return windowStart + last;
-    let start = 0;
-    for (const token of [';', '}', '{', '*/']) {
-        const idx = source.lastIndexOf(token, openIndex - 1);
-        if (idx >= 0) start = Math.max(start, idx + token.length);
-    }
-    return start;
-}
-
 function walk(dir, out = []) {
     let entries;
     try {
@@ -159,48 +130,499 @@ function walk(dir, out = []) {
     return out;
 }
 
-/**
- * Splits a file into its top-level function bodies by brace depth, so a sink can
- * be attributed to the function that is responsible for authorizing it. Returns
- * [{ name, start, end, text, params }].
- */
-function topLevelFunctions(source) {
-    const ranges = [];
+/** Index of the matching ')' for the '(' at `open`. */
+function matchParen(text, open) {
+    let depth = 0;
+    for (let i = open; i < text.length; i++) {
+        const c = text[i];
+        if (c === '(' || c === '[' || c === '{') depth++;
+        else if (c === ')' || c === ']' || c === '}') {
+            depth--;
+            if (depth === 0) return i;
+        }
+    }
+    return text.length;
+}
+
+// ---- Units: the functions, and class members, a file is analysed as ----------
+//
+// Everything from here to topLevelFunctions() reads the MASKED text, plus the
+// source where a blanked string has to be told apart from a blanked comment.
+
+/** The top-level `{ }` pairs of the masked text, by brace depth. */
+function topLevelBlocks(masked) {
+    const blocks = [];
     let depth = 0;
     let openIndex = -1;
-    let inLine = false, inBlock = false, quote = null;
-    for (let i = 0; i < source.length; i++) {
-        const c = source[i], next = source[i + 1];
-        if (inLine) { if (c === '\n') inLine = false; continue; }
-        if (inBlock) { if (c === '*' && next === '/') { inBlock = false; i++; } continue; }
-        if (quote) {
-            if (c === '\\') { i++; continue; }
-            if (c === quote) quote = null;
-            continue;
-        }
-        if (c === '/' && next === '/') { inLine = true; i++; continue; }
-        if (c === '/' && next === '*') { inBlock = true; i++; continue; }
-        if (c === '"' || c === "'" || c === '`') { quote = c; continue; }
+    for (let i = 0; i < masked.length; i++) {
+        const c = masked[i];
         if (c === '{') {
             if (depth === 0) openIndex = i;
             depth++;
         } else if (c === '}') {
             depth--;
             if (depth === 0 && openIndex >= 0) {
-                const header = source.slice(headerStart(source, openIndex), openIndex);
-                const named = header.match(/(?:function\s+(\w+)|const\s+(\w+)\s*[:=])/);
-                ranges.push({
-                    name: named ? (named[1] || named[2]) : '<anonymous>',
-                    start: openIndex,
-                    end: i + 1,
-                    text: source.slice(openIndex, i + 1),
-                    header,
-                });
+                blocks.push([openIndex, i]);
                 openIndex = -1;
             }
         }
     }
-    return ranges;
+    return blocks;
+}
+
+/**
+ * Index of the `}` closing the `{` at `open`, counting braces only -- the way
+ * topLevelBlocks() does, so a body ends where its block does. Counting
+ * parentheses too let an unmatched `(` carry one function on over every block
+ * after it: the masker has no regex-literal state, so `/url\s*\(/` leaves one.
+ */
+function closingBrace(masked, open) {
+    let depth = 0;
+    for (let i = open; i < masked.length; i++) {
+        if (masked[i] === '{') depth++;
+        else if (masked[i] === '}' && --depth === 0) return i;
+    }
+    return masked.length;
+}
+
+// A line break ends a statement (or a class member) when the next line starts a
+// new one -- a name, a keyword, a decorator -- rather than an operator that
+// carries the expression on.
+const STARTS_STATEMENT = /^\s*(?!(?:instanceof|in|of|as|satisfies|extends|implements)(?![\w$]))[A-Za-z_$#@]/;
+
+// Words after which an expression or a type cannot have ended.
+const CONTINUES = new Set(['instanceof', 'in', 'of', 'as', 'satisfies', 'typeof', 'keyof', 'new', 'delete',
+    'await', 'yield', 'extends', 'implements', 'infer', 'is', 'readonly', 'unique', 'asserts']);
+
+/**
+ * The last token before `i`: `=>`, a word, one punctuation character, or `'` for
+ * a string literal -- which is blank in the masked text and is recognised by the
+ * closing quote the source still has there.
+ */
+function lastToken(masked, source, i) {
+    let j = i - 1;
+    while (j >= 0 && /\s/.test(masked[j])) j--;
+    if (/['"`]$/.test(source.slice(j + 1, i).trimEnd())) return "'";
+    if (j < 0) return '';
+    if (masked[j] === '>' && masked[j - 1] === '=') return '=>';
+    const word = /[\w$]+$/.exec(masked.slice(Math.max(0, j - 40), j + 1));
+    return word ? word[0] : masked[j];
+}
+
+/** Whether `token` can end a value or a type, i.e. nothing more of it has to follow. */
+const endsValue = (token) => token === "'" || token === ')' || token === ']' || token === '}' || token === '>'
+    || (/^[\w$]+$/.test(token) && !CONTINUES.has(token));
+
+/**
+ * Index just past the statement (or class member) that continues at `from`: past
+ * its `;`, or at the line break the next one starts after, or at the `}` closing
+ * the block it sits in. Braces only, for closingBrace()'s reason: a `;` that does
+ * not end the statement can only sit in a body or a type literal.
+ */
+function statementEnd(masked, source, from) {
+    let depth = 0;
+    for (let i = from; i < masked.length; i++) {
+        const c = masked[i];
+        if (c === '{') depth++;
+        else if (c === '}') {
+            if (--depth < 0) return i;
+        } else if (depth === 0 && c === ';') return i + 1;
+        else if (depth === 0 && c === '\n' && STARTS_STATEMENT.test(masked.slice(i + 1, i + 80))
+            && endsValue(lastToken(masked, source, i))) return i;
+    }
+    return masked.length;
+}
+
+/**
+ * Index of the `{` opening the body of the declaration whose head continues at
+ * `from` -- after its parameter list, or after a class's name -- or -1 when the
+ * head ends first: at a `;`, or at the line break a new statement follows (an
+ * overload, an abstract member). A `{` in a type position is a type literal and
+ * is stepped over: `Promise<{ a: T }>`, `: { a: T }`, `() => { a: T }`.
+ */
+function bodyAfter(masked, source, from) {
+    let depth = 0;
+    for (let i = from; i < masked.length; i++) {
+        const c = masked[i];
+        if (c === '(' || c === '[' || c === '<') depth++;
+        else if (c === ')' || c === ']' || (c === '>' && masked[i - 1] !== '=')) depth--;
+        else if (c === '{') {
+            if (depth === 0 && endsValue(lastToken(masked, source, i))) return i;
+            i = closingBrace(masked, i);
+        } else if (c === '}' || (depth === 0 && c === ';')) return -1;
+        else if (depth === 0 && c === '\n' && STARTS_STATEMENT.test(masked.slice(i + 1, i + 80))
+            && endsValue(lastToken(masked, source, i))) return -1;
+    }
+    return -1;
+}
+
+/** Index of the `>` closing the type parameter list whose `<` is at `open`. */
+function closingAngle(masked, open) {
+    let depth = 0;
+    for (let i = open; i < masked.length; i++) {
+        const c = masked[i];
+        if (c === '<' || c === '(' || c === '[' || c === '{') depth++;
+        else if (c === ')' || c === ']' || c === '}' || (c === '>' && masked[i - 1] !== '=')) {
+            if (--depth === 0) return i;
+        }
+    }
+    return masked.length;
+}
+
+/**
+ * The parameter names of the list whose `(` is at `open`, split only at commas no
+ * bracket, type argument or callback type encloses.
+ *
+ * Read as `[^)]*` and split at every comma, a list stopped at the first `)` -- and
+ * a callback-typed parameter puts one inside it -- and split inside `Map<K, V>`
+ * and `(a: A, b: B) => C`, so a parameter could be lost or found at the wrong
+ * position.
+ */
+function paramNames(masked, open) {
+    const close = matchParen(masked, open);
+    const params = [];
+    let depth = 0;
+    let start = open + 1;
+    for (let i = open + 1; i < close; i++) {
+        const c = masked[i];
+        if (c === '(' || c === '[' || c === '{' || c === '<') depth++;
+        else if (c === ')' || c === ']' || c === '}' || (c === '>' && masked[i - 1] !== '=')) depth--;
+        else if (c === ',' && depth === 0) {
+            params.push(masked.slice(start, i));
+            start = i + 1;
+        }
+    }
+    params.push(masked.slice(start, close));
+    // A constructor's parameter properties carry an access modifier.
+    return params.map((p) => p.trim().split(':')[0].trim()
+        .replace(/^(?:@[\w$.]+(?:\([^)]*\))?\s*)*(?:(?:public|private|protected|readonly|override)\s+)*/, ''))
+        .filter(Boolean);
+}
+
+/**
+ * If the expression at `at` is itself a function -- `function (...)`, `(...) =>`
+ * or `x =>`, each optionally async -- its parameter names, else null.
+ */
+function functionParamsAt(masked, at) {
+    const lead = /\s*(?:async\s+)?(function(?![\w$])\s*\*?\s*(?:[A-Za-z_$][\w$]*)?)?\s*/y;
+    lead.lastIndex = at;
+    const m = lead.exec(masked);
+    let i = lead.lastIndex;
+    if (masked[i] === '<') {
+        i = closingAngle(masked, i) + 1;
+        while (/\s/.test(masked[i])) i++;
+    }
+    if (masked[i] === '(') {
+        if (m[1]) return paramNames(masked, i);
+        // An arrow: the list, an optional return type, then `=>`.
+        let j = matchParen(masked, i) + 1;
+        while (/\s/.test(masked[j])) j++;
+        if (masked[j] === ':') {
+            for (let depth = 0; ++j < masked.length;) {
+                const c = masked[j];
+                if (depth === 0 && c === '=' && masked[j + 1] === '>') break;
+                if (c === '(' || c === '[' || c === '{' || c === '<') depth++;
+                else if (c === ')' || c === ']' || c === '}' || (c === '>' && masked[j - 1] !== '=')) {
+                    if (--depth < 0) return null;
+                } else if (depth === 0 && (c === ';' || c === ',')) return null;
+            }
+        }
+        return masked[j] === '=' && masked[j + 1] === '>' ? paramNames(masked, i) : null;
+    }
+    const one = /([A-Za-z_$][\w$]*)\s*=>/y;
+    one.lastIndex = i;
+    const single = m[1] ? null : one.exec(masked);
+    return single ? [single[1]] : null;
+}
+
+/**
+ * The declarators of the `const`/`let`/`var` statement whose names begin at
+ * `from` and which ends at `end`: each one's name (null for a destructuring
+ * pattern), its range, and -- when its initializer is itself a function -- that
+ * function's parameters.
+ */
+function declaratorsOf(masked, from, end) {
+    const out = [];
+    for (let i = from; i < end;) {
+        const head = /\s*(?:([A-Za-z_$][\w$]*)|[{[])/y;
+        head.lastIndex = i;
+        const m = head.exec(masked);
+        if (!m) break;
+        const start = head.lastIndex - (m[1] ? m[1].length : 1);
+        let j = m[1] ? head.lastIndex : matchParen(masked, start) + 1;
+        // Its type, if annotated -- where type arguments nest and `=>` is not `=`.
+        let eq = -1;
+        for (let depth = 0; j < end; j++) {
+            const c = masked[j];
+            if (c === '(' || c === '[' || c === '{' || c === '<') depth++;
+            else if (c === ')' || c === ']' || c === '}' || (c === '>' && masked[j - 1] !== '=')) depth--;
+            else if (depth === 0 && c === '=' && masked[j + 1] !== '>') { eq = j; break; }
+            else if (depth === 0 && c === ',') break;
+        }
+        // Its initializer, to the next comma no bracket encloses that a
+        // declarator follows -- the comma in `<K, V>(k: K) =>` or `new Map<K, V>()`
+        // separates type arguments.
+        if (eq >= 0) {
+            let depth = 0;
+            for (j = eq + 1; j < end; j++) {
+                const c = masked[j];
+                if (c === '(' || c === '[' || c === '{') depth++;
+                else if (c === ')' || c === ']' || c === '}') depth--;
+                else if (depth === 0 && c === ','
+                    && /^\s*(?:[A-Za-z_$][\w$]*\s*(?:[:=,;!]|$)|[{[])/.test(masked.slice(j + 1, end))) break;
+            }
+        }
+        out.push({ name: m[1] || null, start, end: Math.min(j, end), params: eq >= 0 ? functionParamsAt(masked, eq + 1) || [] : [] });
+        i = j + 1;
+    }
+    return out;
+}
+
+/**
+ * Every top-level declaration that can own a block, with the range it spans: a
+ * function, a class (with the `{` of its body), each declarator of a
+ * `const`/`let`/`var`, and -- as kind `type` -- the declarations that hold no
+ * code: an interface, a type alias, an enum, anything `declare`d, an overload.
+ *
+ * A keyword is only an anchor where it is at the top level, which is read off a
+ * copy with every top-level block's inside blanked -- so the `const` of a local
+ * variable can no longer name the block after the function it is in.
+ */
+function declarationsOf(source, masked, blocks) {
+    const flat = masked.split('');
+    for (const [open, close] of blocks) {
+        for (let i = open + 1; i < close; i++) if (flat[i] !== '\n') flat[i] = ' ';
+    }
+    const top = flat.join('');
+    const decls = [];
+    const keyword = /(?<![\w$.])((?:(?:export|default|declare|abstract|async)\s+)*)(function|class|const|let|var|interface|type|enum|namespace|module|global)(?![\w$])/g;
+    let parens = 0;
+    let scanned = 0;
+    for (const m of top.matchAll(keyword)) {
+        for (; scanned < m.index; scanned++) {
+            if (top[scanned] === '(' || top[scanned] === '[') parens++;
+            else if (top[scanned] === ')' || top[scanned] === ']') parens--;
+        }
+        const [, prefix, kind] = m;
+        const start = m.index;
+        const at = m.index + m[0].length;
+        const declared = /declare/.test(prefix);
+        const byDefault = /default/.test(prefix) ? 'default' : null;
+        const extent = (from) => {
+            const body = bodyAfter(masked, source, from);
+            return { body, end: body < 0 ? statementEnd(masked, source, from) : closingBrace(masked, body) + 1 };
+        };
+        if (kind === 'function') {
+            const head = /\s*\*?\s*([A-Za-z_$][\w$]*)?\s*/y;
+            head.lastIndex = at;
+            const name = head.exec(masked)[1] || byDefault;
+            let open = head.lastIndex;
+            if (masked[open] === '<') {
+                open = closingAngle(masked, open) + 1;
+                while (/\s/.test(masked[open])) open++;
+            }
+            if (masked[open] !== '(') continue;
+            const { body, end } = extent(matchParen(masked, open) + 1);
+            decls.push(declared || body < 0 ? { kind: 'type', start, end }
+                : { kind: 'function', name, start, end, params: paramNames(masked, open) });
+        } else if (kind === 'class') {
+            const head = /\s+(?!(?:extends|implements)(?![\w$]))([A-Za-z_$][\w$]*)/y;
+            head.lastIndex = at;
+            const named = head.exec(masked);
+            const { body, end } = extent(named ? head.lastIndex : at);
+            if (body < 0) continue;
+            decls.push(declared ? { kind: 'type', start, end } : { kind: 'class', name: named ? named[1] : byDefault, start, end, body });
+        } else if (kind === 'const' || kind === 'let' || kind === 'var') {
+            if (parens !== 0) continue;
+            if (declared || /^\s+enum(?![\w$])/.test(masked.slice(at, at + 12))) {
+                decls.push({ kind: 'type', start, end: declared ? statementEnd(masked, source, at) : extent(at).end });
+                continue;
+            }
+            declaratorsOf(masked, at, statementEnd(masked, source, at)).forEach((d, n) =>
+                decls.push({ kind: 'var', name: d.name, start: n === 0 ? start : d.start, end: d.end, params: d.params }));
+        } else if (kind === 'type') {
+            if (/^\s+[A-Za-z_$][\w$]*\s*[<=]/.test(masked.slice(at, at + 200))) {
+                decls.push({ kind: 'type', start, end: statementEnd(masked, source, at) });
+            }
+        } else if (kind === 'interface' || kind === 'enum' || declared) {
+            decls.push({ kind: 'type', start, end: extent(at).end });
+        }
+    }
+    return decls;
+}
+
+/**
+ * The declaration that owns the block opening at `open`: a variable whose
+ * initializer holds it, however deep, or else the innermost function, class or
+ * type declaration that spans it. Null when none does -- a statement that ended
+ * before the `{` cannot name it.
+ */
+function ownerOf(decls, open) {
+    const spanning = decls.filter((d) => d.start < open && open < d.end);
+    return spanning.find((d) => d.kind === 'var') || spanning[spanning.length - 1] || null;
+}
+
+/**
+ * The members of the class whose body is masked[open..close]: each one's name,
+ * where that name is (`at`), the blocks inside it, and the parameters of the
+ * function it is -- a method, or a property whose initializer is a function. A
+ * static block, or anything the scan cannot read, belongs to the class and is
+ * named after it.
+ */
+function classMembers(source, masked, open, close, className) {
+    const inner = [];
+    for (let i = open + 1, depth = 0, from = -1; i < close; i++) {
+        if (masked[i] === '{') {
+            if (depth++ === 0) from = i;
+        } else if (masked[i] === '}' && --depth === 0) inner.push([from, i]);
+    }
+    const members = [];
+    // Whitespace and comments, read off the source: a member can be named by a
+    // string literal, which the masked copy blanks exactly as it does a comment.
+    const skip = (k) => {
+        for (;;) {
+            while (k < close && /\s/.test(source[k])) k++;
+            const past = source.startsWith('//', k) ? source.indexOf('\n', k)
+                : source.startsWith('/*', k) ? source.indexOf('*/', k) + 2 : k;
+            if (past === k) return k;
+            if (past < k) return close;
+            k = past;
+        }
+    };
+    const modifier = /(?:public|private|protected|static|readonly|override|abstract|declare|accessor|async|get|set)\s+(?=[^\s(<=:;?!,)}])/y;
+    for (let i = skip(open + 1); i < close; i = skip(i)) {
+        if (masked[i] === ';') {
+            i++;
+            continue;
+        }
+        const head = i;
+        for (let more = true; more;) {
+            more = false;
+            if (masked[i] === '@') {
+                const decorator = /@[\w$.]*\s*/y;
+                decorator.lastIndex = i;
+                decorator.exec(masked);
+                i = masked[decorator.lastIndex] === '(' ? skip(matchParen(masked, decorator.lastIndex) + 1) : decorator.lastIndex;
+                more = true;
+            }
+            modifier.lastIndex = i;
+            if (modifier.test(masked)) {
+                i = modifier.lastIndex;
+                more = true;
+            }
+        }
+        if (masked[i] === '{') {
+            const end = closingBrace(masked, i) + 1;
+            members.push({ name: className, at: null, head, end, params: [] });
+            i = end;
+            continue;
+        }
+        if (masked[i] === '*') i = skip(i + 1);
+        const at = i;
+        let name = null;
+        const id = /#?[A-Za-z_$][\w$]*|\d[\w.]*/y;
+        id.lastIndex = i;
+        const word = id.exec(masked);
+        if (word) {
+            name = word[0];
+            i = id.lastIndex;
+        } else if (masked[i] === '[') {
+            const e = matchParen(masked, i);
+            name = source.slice(i, e + 1);
+            i = e + 1;
+        } else if (/['"]/.test(source[i])) {
+            let e = i + 1;
+            while (e < close && source[e] !== source[i]) e += source[e] === '\\' ? 2 : 1;
+            name = source.slice(i + 1, e);
+            i = e + 1;
+        }
+        i = skip(i);
+        if (masked[i] === '?' || masked[i] === '!') i = skip(i + 1);
+        let params = [];
+        let end;
+        if (name !== null && (masked[i] === '(' || masked[i] === '<')) {
+            if (masked[i] === '<') i = skip(closingAngle(masked, i) + 1);
+            const body = masked[i] === '(' ? bodyAfter(masked, source, matchParen(masked, i) + 1) : -1;
+            if (masked[i] === '(') params = paramNames(masked, i);
+            end = body >= 0 ? closingBrace(masked, body) + 1 : statementEnd(masked, source, i);
+        } else {
+            end = statementEnd(masked, source, i);
+            const eq = /^\s*(?::[^=]*?)?=(?!>)/.exec(masked.slice(i, end));
+            if (name !== null && eq) params = functionParamsAt(masked, i + eq[0].length) || [];
+        }
+        end = Math.max(end, i + 1);
+        members.push({ name: name === null ? className : name, at: name === null ? null : at, head, end, params });
+        i = end;
+    }
+    for (const m of members) m.blocks = inner.filter(([o]) => o >= m.head && o < m.end);
+    const orphans = inner.filter(([o]) => !members.some((m) => o >= m.head && o < m.end));
+    if (orphans.length) members.push({ name: className, at: null, head: orphans[0][0], end: close, params: [], blocks: orphans });
+    return members;
+}
+
+/**
+ * Splits a file into the units a sink is attributed to, each named after the
+ * declaration that OWNS its block -- a top-level function or variable or, in a
+ * class, the member: the unit responsible for authorizing it. Returns
+ * [{ name, start, end, text, header, params, member }].
+ *
+ * Anchoring on the declaration keyword instead of reading a fixed two lines
+ * back from the `{` is what stopped a signature wrapped over more lines from
+ * parsing as <anonymous> and taking every sink inside it out of this gate. But
+ * the anchor was the nearest `function` or `const` in the 2000 characters above,
+ * and `class` was not a declaration: a class body had no name and was skipped,
+ * or borrowed one -- `const TIMEOUT_MS` above `export class Puller` named every
+ * sink in Puller's methods. A declaration now names only a block it CONTAINS,
+ * and a class body is split into its members, each named after the member. A
+ * block no declaration owns -- a top-level `if`, a callback handed to a call --
+ * is `<module>` and is still verdicted, where it used to borrow the name of
+ * whatever came before it. An interface, type alias, enum or `declare` body
+ * holds no code, so a method signature in one is not a sink.
+ */
+function topLevelFunctions(source) {
+    const masked = maskCommentsAndStrings(source);
+    const blocks = topLevelBlocks(masked);
+    const decls = declarationsOf(source, masked, blocks);
+    const units = [];
+    const unit = (name, [open, close], head, params, member) => units.push({
+        name,
+        start: open,
+        end: close + 1,
+        text: source.slice(open, close + 1),
+        header: source.slice(head, open),
+        params,
+        member,
+    });
+    for (const block of blocks) {
+        const owner = ownerOf(decls, block[0]);
+        if (owner && owner.kind === 'type') continue;
+        if (owner && owner.kind === 'class') {
+            if (block[0] !== owner.body) continue;
+            for (const m of classMembers(source, masked, block[0], block[1], owner.name || '<module>')) {
+                for (const b of m.blocks) unit(m.name, b, m.head, m.params, true);
+            }
+        } else if (owner && owner.name) unit(owner.name, block, owner.start, owner.params, false);
+        else unit('<module>', block, block[0], [], false);
+    }
+    return units;
+}
+
+/**
+ * A predicate: does index `i` of `source` DECLARE a name rather than call it --
+ * a class member's name, or anything inside an interface, type alias or
+ * `declare` -- so a method's own signature `name(url, authorize: ...) {` is not
+ * read as a call site handing over its parameter declaration as the authorizer.
+ */
+function declarationHeads(source) {
+    const masked = maskCommentsAndStrings(source);
+    const decls = declarationsOf(source, masked, topLevelBlocks(masked));
+    const names = new Set();
+    for (const d of decls) {
+        if (d.kind !== 'class') continue;
+        for (const m of classMembers(source, masked, d.body, closingBrace(masked, d.body), d.name)) names.add(m.at);
+    }
+    const types = decls.filter((d) => d.kind === 'type');
+    return (i) => names.has(i) || types.some((d) => i >= d.start && i < d.end);
 }
 
 /**
@@ -264,6 +686,30 @@ function argumentAt(source, index, n) {
 }
 
 /**
+ * What the local helper `function name(...) { return <expr>; }` returns, or null.
+ * Its parameter list is read by a balanced scan: `\([^)]*\)` ended the list at
+ * the first `)`, so a helper with a callback-typed parameter could not be found.
+ */
+function helperReturn(source, name) {
+    const masked = maskCommentsAndStrings(source);
+    for (const m of masked.matchAll(new RegExp(`(?<![\\w$.])function\\s+${name}\\s*(?=[<(])`, 'g'))) {
+        let open = m.index + m[0].length;
+        if (masked[open] === '<') {
+            open = closingAngle(masked, open) + 1;
+            while (/\s/.test(masked[open])) open++;
+        }
+        if (masked[open] !== '(') continue;
+        const body = bodyAfter(masked, source, matchParen(masked, open) + 1);
+        if (body < 0) continue;
+        const returned = /\{\s*return\s+([^;]+);/y;
+        returned.lastIndex = body;
+        const r = returned.exec(source);
+        if (r) return r[1].trim();
+    }
+    return null;
+}
+
+/**
  * Resolves an argument expression to the URL it actually denotes, following ONE
  * level of local `const x = <expr>` and one level of `return` inside a local
  * helper, so `const u = getHashiCorpDownloadUrl(v); downloadTool(u, ...)` is
@@ -273,8 +719,8 @@ function resolveExpression(expr, fnText, source) {
     if (/^[A-Za-z_]\w*$/.test(expr)) {
         const local = fnText.match(new RegExp(`\\b(?:const|let)\\s+${expr}\\s*(?::[^=]+)?=\\s*([^;]+);`));
         if (local) return resolveExpression(local[1].trim(), fnText, source);
-        const helper = source.match(new RegExp(`function\\s+${expr}\\s*\\([^)]*\\)[^{]*\\{\\s*return\\s+([^;]+);`));
-        if (helper) return helper[1].trim();
+        const helper = helperReturn(source, expr);
+        if (helper !== null) return helper;
     }
     // A template whose leading interpolation is a local URL variable:
     // `${downloadUrl}.sha256` denotes whatever downloadUrl denotes.
@@ -287,8 +733,8 @@ function resolveExpression(expr, fnText, source) {
     }
     const call = expr.match(/^(\w+)\s*\(/);
     if (call) {
-        const helper = source.match(new RegExp(`function\\s+${call[1]}\\s*\\([^)]*\\)[^{]*\\{\\s*return\\s+([^;]+);`));
-        if (helper) return helper[1].trim();
+        const helper = helperReturn(source, call[1]);
+        if (helper !== null) return helper;
     }
     return expr;
 }
@@ -362,10 +808,8 @@ for (const file of files) {
             while ((m = re.exec(masked)) !== null) {
                 const fn = fns.find(f => m.index > f.start && m.index < f.end);
                 if (!fn || fn.name === name) continue;
-                if (/^(export\s+)?(async\s+)?function\s/.test(fn.header) === false && fn.name === '<anonymous>') continue;
                 const raw = argumentAt(source, m.index + m[0].length - 1, urlArgIndex);
-                const params = (fn.header.match(/\(([^)]*)\)/) || [, ''])[1]
-                    .split(',').map(p => p.trim().split(':')[0].trim()).filter(Boolean);
+                const { params } = fn;
                 // The URL is one of this function's own parameters: the
                 // authorization decision belongs to its CALLERS, so record the
                 // parameter position and re-scan treating calls to it as sinks.
@@ -471,24 +915,34 @@ const unique = findings.filter(f => {
 // gate would be as easy as declaring the parameter and passing () => {}.
 const injectedCallSiteFailures = [];
 const injectedSeen = new Set();
+const declaresIn = new Map();
 for (const file of files) {
     const source = fs.readFileSync(file, 'utf8');
     const rel = path.relative(ROOT, file).split(path.sep).join('/');
     for (const fn of topLevelFunctions(source)) {
         const params = authorizerParams(fn.header);
         if (params.length === 0) continue;
-        const name = (fn.header.match(/function\s+(\w+)/) || [])[1];
-        if (!name) continue;
-        const argIndex = (fn.header.match(/\(([\s\S]*)\)/) || [, ''])[1]
-            .split(',').map(p => p.trim().split(':')[0].trim()).indexOf(params[0]);
+        // The unit's own name and parameter list. The name used to be read off
+        // `function x(` alone, so a `const` arrow or a class method could declare
+        // the parameter, be handed a no-op by every caller, and still read as
+        // authorized; and the position came from splitting the header at every
+        // comma, which a `Map<K, V>` parameter ahead of it would have shifted.
+        const { name } = fn;
+        const argIndex = fn.params.indexOf(params[0]);
         if (argIndex < 0) continue;
+        // A member is called through an object: `this.name(`, `client.name(`.
+        const literal = name.replace(/[$[\]().*+?^{}|\\]/g, '\\$&');
+        const callee = fn.member ? `(?:[\\w$]+\\s*\\.\\s*)?${literal}` : literal;
         for (const callFile of files) {
             const callSource = fs.readFileSync(callFile, 'utf8');
             const callRel = path.relative(ROOT, callFile).split(path.sep).join('/');
-            const callRe = new RegExp(`(?<![.\\w])${name}\\s*\\(`, 'g');
+            if (!declaresIn.has(callFile)) declaresIn.set(callFile, declarationHeads(callSource));
+            const declares = declaresIn.get(callFile);
+            const callRe = new RegExp(`(?<![.\\w])${callee}\\s*\\(`, 'g');
             let cm;
             while ((cm = callRe.exec(maskCommentsAndStrings(callSource))) !== null) {
                 if (/(?:function|import)\s+$/.test(callSource.slice(Math.max(0, cm.index - 30), cm.index))) continue;
+                if (declares(cm.index)) continue;
                 const arg = argumentAt(callSource, cm.index + cm[0].length - 1, argIndex);
                 if (arg === null || arg === undefined) continue;
                 if (!String(arg).includes(`${AUTHORIZER}(`)) {
