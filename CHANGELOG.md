@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.29.1](https://github.com/4cloudguru/shared-workflows/compare/v1.29.0...v1.29.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* **actions:** enumerate downloads in class methods and wrapped signatures ([#97](https://github.com/4cloudguru/shared-workflows/issues/97)) ([4acefca](https://github.com/4cloudguru/shared-workflows/commit/4acefca3112a5d9582d462c5eb45404b219801f4))
+* **check-proxy-parity:** recognise regex literals in the masker ([#96](https://github.com/4cloudguru/shared-workflows/issues/96)) ([19919ad](https://github.com/4cloudguru/shared-workflows/commit/19919ad27db9ef8478c014a6afde282d2d7ea714))
+* **check-proxy-parity:** stop attributing a site to a neighbouring method ([#95](https://github.com/4cloudguru/shared-workflows/issues/95)) ([9c47a74](https://github.com/4cloudguru/shared-workflows/commit/9c47a744fac55434c70ec763bf01b5108cf7fba7))
+* **check-zizmor-anchors:** scan the repo root, not .github/ ([#93](https://github.com/4cloudguru/shared-workflows/issues/93)) ([a7fe527](https://github.com/4cloudguru/shared-workflows/commit/a7fe527484b005c47bfb0848c97ec0d0f4bc467e))
+
 ## [1.29.0](https://github.com/4cloudguru/shared-workflows/compare/v1.28.1...v1.29.0) (2026-09-23)
 
 
