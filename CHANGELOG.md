@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.2](https://github.com/4cloudguru/shared-workflows/compare/v1.29.1...v1.29.2) (2026-10-21)
+
+
+### Bug Fixes
+
+* **signature-replay:** drop the five repos that moved to Azure DevOps ([#100](https://github.com/4cloudguru/shared-workflows/issues/100)) ([a11c61f](https://github.com/4cloudguru/shared-workflows/commit/a11c61f7620dd6b2f2de0bd9b622d3faf84078fd))
+
 ## [1.29.1](https://github.com/4cloudguru/shared-workflows/compare/v1.29.0...v1.29.1) (2026-09-26)
 
 
