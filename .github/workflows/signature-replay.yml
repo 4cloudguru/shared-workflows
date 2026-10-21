@@ -168,7 +168,7 @@ jobs:
       #
       # WHY FIRST, AND WHY IT USES NO ACTION. Steps run in order and a failed
       # step ends the job, so a guard in position one decides before anything
-      # untrusted has executed: not the eighteen checkouts below, not
+      # untrusted has executed: not the thirteen checkouts below, not
       # setup-python/go/node, and above all not the poisoned
       # pin a malicious bump would have introduced. Behind a compromised action
       # the job is already lost — it can idle on the runner and read the minted
@@ -328,41 +328,15 @@ jobs:
       # zizmor's `artipacked` audit, and it is not theoretical: widen the upload
       # path by one glob and the credential ships with the report. The replay only
       # READS these trees; nothing after the checkouts needs git credentials.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          {
-            persist-credentials: false,
-            repository: sethbacon/terraform-registry-backend,
-            path: suite/terraform-registry-backend,
-          }
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          {
-            persist-credentials: false,
-            repository: sethbacon/terraform-state-manager-backend,
-            path: suite/terraform-state-manager-backend,
-          }
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          {
-            persist-credentials: false,
-            repository: sethbacon/terraform-registry-frontend,
-            path: suite/terraform-registry-frontend,
-          }
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          {
-            persist-credentials: false,
-            repository: sethbacon/terraform-state-manager-frontend,
-            path: suite/terraform-state-manager-frontend,
-          }
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          {
-            persist-credentials: false,
-            repository: sethbacon/terraform-suite-identity,
-            path: suite/terraform-suite-identity,
-          }
+      #
+      # NOT HERE: the registry and state-manager backends and frontends and
+      # terraform-suite-identity. They moved to Azure DevOps in 2026-09, and their
+      # GitHub copies are now private (four archived), so GITHUB_TOKEN gets "Not
+      # Found" on them and every replay failed from 2026-10-16. They left
+      # scope.json on 2026-10-21 (sethbacon/security-orchestration#196) rather
+      # than gaining a credential here: replaying those copies would be green
+      # over code nobody ships, and "all of them are public" above is what keeps
+      # this job free of any token but its own.
       # `path` is the OLD name on purpose: scope.json's `dir` is what
       # `--repos-root suite` resolves against, and renaming the repo did not
       # rename the scope entry.
@@ -571,7 +545,7 @@ jobs:
       #
       # This job holds an App token that can read the PRIVATE
       # security-orchestration repository, and the steps after it execute
-      # repo-committed gate scripts from sixteen repositories -- which are
+      # repo-committed gate scripts from eleven repositories -- which are
       # exactly the thing under test. The token must be dead before any of them
       # runs (#32).
       #
@@ -595,7 +569,7 @@ jobs:
             https://api.github.com/installation/token)
           if [ "$revoked" != "204" ]; then
             echo "::error::Revoking the security-orchestration installation token returned HTTP ${revoked}, not 204." \
-                 "The replay runs repo-committed gate scripts from fifteen repositories and must not do so while that" \
+                 "The replay runs repo-committed gate scripts from eleven repositories and must not do so while that" \
                  "token is live (#32)."
             exit 1
           fi
@@ -763,7 +737,7 @@ jobs:
         # BOTH SURFACES ARE REDACTED, or neither is.
         #
         # replay.py produces a per-issue map of the estate's KNOWN-DEFECTIVE,
-        # NOT-YET-FIXED sites across fifteen repositories, derived from a ledger
+        # NOT-YET-FIXED sites across eleven repositories, derived from a ledger
         # in the PRIVATE security-orchestration repo. Almost every caller of this
         # workflow is PUBLIC, and an Actions artifact inherits REPOSITORY read
         # access -- there is no per-artifact ACL to reach for.
