@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.3](https://github.com/4cloudguru/shared-workflows/compare/v1.29.2...v1.29.3) (2026-10-22)
+
+
+### Bug Fixes
+
+* **tooling-pins:** read zizmor-action v0.7's lock directory, and move all three pins to current ([#102](https://github.com/4cloudguru/shared-workflows/issues/102)) ([4804a79](https://github.com/4cloudguru/shared-workflows/commit/4804a79163f5a1ade7be5ca2a1fbdb7f9326f3ce))
+
 ## [1.29.2](https://github.com/4cloudguru/shared-workflows/compare/v1.29.1...v1.29.2) (2026-10-21)
 
 
