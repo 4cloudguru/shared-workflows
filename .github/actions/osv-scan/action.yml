@@ -43,6 +43,12 @@
 # The 127 case was reproduced on demand by scanning a module whose `go`
 # directive names a release newer than the image's bundled toolchain with call
 # analysis left on, which is the estate's original incident.
+#
+# Re-measured against v2.7.0 on 2026-10-22, side by side with v2.5.1: exit 0
+# on a clean lockfile and exit 1 on a lockfile with live advisories, from both
+# images, and an empty tree reports 128 inside and exits 0 from both entrypoints.
+# The official action's invocation is unchanged between the two tags (same
+# image argument convention, GOTOOLCHAIN=auto).
 name: "OSV scan with a captured exit code"
 description: >-
   Runs osv-scanner in its official image and reports the real exit code,
@@ -60,15 +66,15 @@ inputs:
       ./
   image:
     description: >-
-      The scanner image, pinned by digest. The default is v2.5.1. A tag alone is
+      The scanner image, pinned by digest. The default is v2.7.0. A tag alone is
       accepted but is not what this estate pins with; the digest is what makes
       the run reproducible.
     required: false
-    default: "ghcr.io/google/osv-scanner-action:v2.5.1@sha256:dcd947131d8d11b8d0964de6590661fb921a4ecbd7b90a7cb21083acfc3fd8cc"
+    default: "ghcr.io/google/osv-scanner-action:v2.7.0@sha256:d54770fe0b09493894e76a02aaed9f51a0513fa57c5186452a755d257b0068a6"
   gotoolchain:
     description: >-
       GOTOOLCHAIN inside the container. Defaults to `auto`, which is what the
-      official action sets at v2.5.1 — the image itself carries `local`, and the
+      official action sets at v2.7.0 — the image itself carries `local`, and the
       action overrides it. Set `local` to reproduce the abort deliberately.
     required: false
     default: "auto"

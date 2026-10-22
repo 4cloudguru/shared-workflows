@@ -152,7 +152,7 @@ runs:
       #
       # Suppressed INLINE rather than in `.github/zizmor.yml`, deliberately:
       # that file's `ignore:` entries match on BASENAME only (measured with
-      # zizmor 1.30.1, the pinned version — a path entry matches nothing), so a
+      # zizmor 1.30.1, re-measured with 1.31.1 — a path entry matches nothing), so a
       # `github-env` entry there would read `action.yml` and blind this audit
       # for every composite in this repository, present and future. This marker
       # covers exactly one step in exactly one file.

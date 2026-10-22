@@ -192,7 +192,7 @@ report(
 );
 report(
     clean.dockerArgs.some((a) => a === 'GOTOOLCHAIN=auto'),
-    'GOTOOLCHAIN reaches the container (the official action sets auto at v2.5.1; the image itself carries local)',
+    'GOTOOLCHAIN reaches the container (the official action sets auto at v2.7.0; the image itself carries local)',
 );
 report(
     clean.dockerArgs[clean.dockerArgs.length - 1] === '--recursive\n./',
