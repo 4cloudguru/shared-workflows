@@ -99,10 +99,11 @@ function actionlintPin(root) {
  *
  * THE PIN THIS EXISTS FOR IS THE ACTION'S, NOT THE SCANNER'S, and the two are
  * not the same knob. The action ships a FROZEN TABLE of the zizmor releases it
- * can install -- `support/versions` at whatever commit the SHA names -- and
- * `version:` selects a row from that table. A `version:` naming a release the
- * pinned action has never heard of does not fall back and does not warn: the
- * step dies with `Unknown version: <x>`.
+ * can install -- `support/locks/zizmor-<X.Y.Z>.txt` at whatever commit the SHA
+ * names (`support/versions` before v0.7.0) -- and `version:` selects a row from
+ * that table. A `version:` naming a release the pinned action has never heard
+ * of does not fall back and does not warn: the step dies with
+ * `Unknown version <x>` (`Unknown version: <x>` before v0.7.0).
  *
  * That happened, and it is why this reader is here. #47 bumped `version:` to
  * 1.30.0, this checker reported "every tooling pin matches its latest published
@@ -207,7 +208,7 @@ function problems(root, latest) {
             found.push(`zizmor-action ${actionPins[0].tag || actionPins[0].sha.slice(0, 8)} cannot install ` +
                 `zizmor ${distinct[0]}: its frozen version table offers ` +
                 `${latest.zizmorActionSupports.slice(-4).join(', ')}. The step would fail with ` +
-                `"Unknown version: ${distinct[0]}". Bump the action pin as well as \`version:\`.`);
+                `"Unknown version ${distinct[0]}". Bump the action pin as well as \`version:\`.`);
         }
     }
     if (distinctSha.length === 1 && latest.zizmorActionTag && actionPins[0].tag &&
@@ -303,13 +304,22 @@ async function fetchLatest(root) {
     let zizmorActionSupports = null;
     let zizmorActionTag = null;
     if (pins.length > 0) {
-        const url = `https://raw.githubusercontent.com/zizmorcore/zizmor-action/${pins[0].sha}/support/versions`;
-        const table = await fetch(url, { headers: { 'user-agent': 'shared-workflows-tooling-pins' } });
-        if (!table.ok) throw new Error(`zizmor-action support/versions returned ${table.status} at ${pins[0].sha}`);
-        zizmorActionSupports = (await table.text())
-            .split('\n')
-            .map((line) => line.trim().split(/\s+/)[0])
-            .filter((v) => /^[0-9]+\.[0-9]+\.[0-9]+$/.test(v))
+        // From v0.7.0 the table is a DIRECTORY, not a file: one hash-locked
+        // requirements file per release, `support/locks/zizmor-<X.Y.Z>.txt`,
+        // and action.sh dies with `Unknown version <x>` when the file for
+        // `version:` is absent. The old `support/versions` file is gone, so a
+        // 404 here means the layout moved again -- exit 2, never "current".
+        const url = `https://api.github.com/repos/zizmorcore/zizmor-action/contents/support/locks?ref=${pins[0].sha}`;
+        const table = await fetch(url, {
+            headers: { accept: 'application/vnd.github+json', 'user-agent': 'shared-workflows-tooling-pins' },
+        });
+        if (!table.ok) throw new Error(`zizmor-action support/locks returned ${table.status} at ${pins[0].sha}`);
+        const entries = await table.json();
+        if (!Array.isArray(entries)) throw new Error(`zizmor-action support/locks is not a directory at ${pins[0].sha}`);
+        zizmorActionSupports = entries
+            .map((e) => (e.type === 'file' ? /^zizmor-([0-9]+\.[0-9]+\.[0-9]+)\.txt$/.exec(e.name) : null))
+            .filter(Boolean)
+            .map((m) => m[1])
             // Numeric, not lexicographic. A string sort puts 1.9.0 after
             // 1.29.0, so the "table offers ..." message would name the four
             // OLDEST rows while claiming to show what is available.

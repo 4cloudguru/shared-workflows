@@ -73,7 +73,7 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
 
-      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+      - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
         with:
           # Named rather than left to the action's `latest` default. `latest` is
           # safe -- it is an alias inside a digest table frozen by the action's
@@ -89,7 +89,7 @@ jobs:
           # check-zizmor-anchors' default; an `${{ env.* }}` indirection here
           # reads as a MISSING pin, and that reader is the thing keeping all
           # three in step.
-          version: "1.30.1"
+          version: "1.31.1"
           # DO NOT "simplify" this to the default. `advanced-security: true` is
           # the action's default and selects `--format=sarif`, where zizmor
           # EXITS 0 WHATEVER IT FINDS -- the gate silently becomes a reporter.
