@@ -107,6 +107,12 @@ jobs:
       # now, beside the gate it proves.
       - name: Workflow-hardening gate self-test
         run: node tests/test-workflow-hardening.js
+      # The step that picks the checker's commit from the caller's own `uses:`
+      # pin. The self-call above only ever exercises its `./` fallback, which is
+      # how v1.22.0's version passed here and failed every remote caller (#68),
+      # so each remote branch is driven against a caller tree built for it.
+      - name: Workflow-hardening checker-commit resolution self-test
+        run: node tests/test-workflow-hardening-ref.js
       # The upstream comparison runs weekly in tooling-version-drift.yml; this
       # is the logic behind it, exercised on every pull request. The canary this
       # replaces died by reading pins that had moved, so the case that matters

@@ -56,16 +56,16 @@ description: >-
 # `merge-backstop.mjs` grades the merge instant by calling `verify.mjs`'s
 # `evaluate()` with two injected differences, so "the grading logic cannot drift
 # between the two callers". A reusable workflow in this repository cannot reach
-# its own repository's scripts; the established pattern beside this file
-# (`workflow-hardening.yml`) solves that with a `script-ref` input the caller
-# must keep equal to the SHA on its `uses:` line. That coupling is real enough
-# that `scripts/check-workflow-hardening.cjs` has a rule for it -- rule 5 -- and
-# that rule's regex names `workflow-hardening.yml` LITERALLY, so it would not
-# police a new pair.
+# its own repository's scripts. `workflow-hardening.yml` gets around that by
+# reading the commit from the caller's own `uses:` line in its checkout, after
+# a caller-maintained `script-ref` input proved impossible to keep in step
+# (Dependabot rewrites `uses:` lines, never inputs). That is one more moving
+# part, and `scripts/check-workflow-hardening.cjs`'s rule for it names
+# `workflow-hardening.yml` LITERALLY, so it would not police a new pair.
 #
 # Split across a composite action (files from `github.action_path`, pinned by
 # construction to the SHA on the `uses:` line) and a reusable workflow (files
-# from a hand-passed `script-ref`), the pre-merge guard and the after-the-fact
+# from a separately resolved commit), the pre-merge guard and the after-the-fact
 # backstop could be running DIFFERENT CODE in a consumer, with nothing to notice.
 # One action, one `github.action_path`, one SHA makes that impossible rather than
 # detectable. The consumer still owns the job name, triggers and permissions --

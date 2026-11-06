@@ -30,9 +30,10 @@
 //   block-no-allowlist       `block` that names no endpoints             (#23)
 //   reusable-call-exempt     a workflow_call job needs no timeout        (pass)
 //   empty-workflows / empty-jobs   the vacuity contract, both ways
-//   script-ref-skewed        the pin and the checker disagreeing
-//   script-ref-absent        a required input silently omitted
-//   script-ref-matching      the coupling held, asserted as a pass
+//   script-ref-matching      a leftover script-ref equal to the pin: a NOTE, not a failure
+//   script-ref-skewed        a leftover script-ref that differs: ignored, so a NOTE naming both
+//   script-ref-absent        no script-ref at all, which is the expected shape now (pass)
+//   hardening-pin-split      calls pinned at two commits: no single checker, so a failure
 //
 // Nothing is written under this repository's own .github/, which the gate reads
 // for real in the "Lint GitHub Actions" job.
@@ -393,11 +394,12 @@ try {
     ['no jobs parsed'],
   )
 
-  console.log('\nmutations — script-ref coupling:')
-  // `script-ref` names the commit the checker is taken from, and must equal the
-  // SHA on the `uses:` line beside it. Dependabot rewrites one and not the other
-  // and the resulting PR is green, so this is a property no bot can maintain and
-  // nothing was checking.
+  console.log('\nmutations — one checker commit:')
+  // workflow-hardening.yml takes its checker from the caller's own `uses:` pin,
+  // so a `script-ref` beside it is ignored and reported, never failed: that
+  // failure was what every Dependabot bump of the workflow hit, because the bot
+  // rewrites `uses:` lines and not inputs. What still fails is a caller pinned
+  // at two commits, which leaves the workflow no single checker to take.
   const CALLER = (usesSha, refLine) => `---
 name: Hardening
 "on":
@@ -407,33 +409,26 @@ name: Hardening
 jobs:
   workflow-hardening:
     uses: 4cloudguru/shared-workflows/.github/workflows/workflow-hardening.yml@${usesSha} # v1.13.0
-    with:
-${refLine}
-`
+${refLine ? `    with:\n${refLine}\n` : ''}`
   const V13 = '9276df8e0bdb3152e2529ab98c8b99cfb9e22d4b'
   const V161 = '8b7215beac6420881d20d52f9b096edff4238ec9'
-  const addCaller = (body) => (dir) =>
-    fs.writeFileSync(path.join(dir, '.github', 'workflows', 'hardening.yml'), body)
+  const addCaller = (body, name = 'hardening.yml') => (dir) =>
+    fs.writeFileSync(path.join(dir, '.github', 'workflows', name), body)
 
-  expectPass('script-ref-matching', addCaller(CALLER(V13, `      script-ref: ${V13}`)))
-  expectRejection(
+  expectPass('script-ref-matching', addCaller(CALLER(V13, `      script-ref: ${V13}`)), ['NOTE [script-ref]', 'is ignored', '9276df8e'])
+  expectPass(
     'script-ref-skewed',
     addCaller(CALLER(V13, `      script-ref: ${V161}`)),
-    ['script-ref', '8b7215be', '9276df8e'],
+    ['NOTE [script-ref]', 'pin (9276df8e)', 'not from 8b7215be'],
   )
+  expectPass('script-ref-absent', addCaller(CALLER(V13, '')))
   expectRejection(
-    'script-ref-absent',
-    addCaller(`---
-name: Hardening
-"on":
-  push:
-    branches: [main]
-
-jobs:
-  workflow-hardening:
-    uses: 4cloudguru/shared-workflows/.github/workflows/workflow-hardening.yml@${V13} # v1.13.0
-`),
-    ['passes no `script-ref`'],
+    'hardening-pin-split',
+    (dir) => {
+      addCaller(CALLER(V13, ''))(dir)
+      addCaller(CALLER(V161, ''), 'hardening-two.yml')(dir)
+    },
+    ['hardening-pin', '2 different commits', '9276df8e', '8b7215be'],
   )
 } finally {
   fs.rmSync(workRoot, { recursive: true, force: true })

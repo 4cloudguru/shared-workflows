@@ -45,16 +45,16 @@
 //      quoted, which turns a repository directory name into cmd.exe input. So
 //      both directions are checked — no wrapper literal, and the spawn is
 //      `process.execPath` with no `shell:`.
-//   5. SCRIPT-REF COUPLING. A caller of `workflow-hardening.yml` passes
-//      `script-ref`, the commit the checker is taken from, and the workflow's
-//      own docs say it MUST equal the SHA on the `uses:` line beside it. That
-//      property is exactly this file's defect class: true in all 19 consumers
-//      today, enforced by nothing. It is also a property Dependabot cannot
-//      maintain — it rewrites `uses:` lines and knows nothing of workflow
-//      inputs, so its bump moves one and not the other and the PR goes green.
-//      Two such PRs were open when this was written. A skewed pair runs the new
-//      workflow against the old checker: the gate still passes, while enforcing
-//      something other than what the diff said.
+//   5. ONE CHECKER COMMIT. The checker must come from the commit the caller
+//      pins `workflow-hardening.yml` at, or this gate enforces something other
+//      than what the diff says. Callers used to restate that commit as a
+//      `script-ref` input, which Dependabot cannot maintain: it rewrites
+//      `uses:` lines and knows nothing of workflow inputs, so every bump moved
+//      one and not the other. The workflow now reads the commit from the
+//      caller's own `uses:` line, so the coupling holds by construction. What
+//      remains here is the case it cannot resolve: calls pinned at more than
+//      one commit, which fail. A leftover `script-ref` is ignored by the
+//      workflow and reported as a NOTE, not a failure.
 //   3. TIMEOUTS. Every job declares `timeout-minutes`. Without one, a hung or
 //      deliberately-stalled job holds the runner — and whatever credential it
 //      minted — for the platform default of six hours (#22). A job that is a
@@ -93,6 +93,10 @@ const ROOT = path.resolve(process.argv.filter((a) => a !== '--json')[2] || path.
 
 const findings = []
 const fail = (kind, where, message) => findings.push({ kind, where, message })
+const notes = []
+const note = (kind, where, message) => notes.push({ kind, where, message })
+// Every `uses:` pin of workflow-hardening.yml, across every file, with where it is.
+const hardeningPins = new Map()
 
 const enumerated = { workflows: 0, jobs: 0, uses: 0, installs: 0, hardenRunners: 0, egressExceptions: 0, preHardenActionlessSteps: 0, hardeningCalls: 0 }
 
@@ -268,38 +272,34 @@ for (const file of workflowFiles) {
   })
 
   // ── 3 & 4. PER-JOB TIMEOUT AND EGRESS POLICY ──────────────────────────────
-  // ── 5. SCRIPT-REF COUPLING ────────────────────────────────────────────────
-  // Driven by the `uses:` rather than by the presence of a script-ref: a file
-  // that calls the hardening workflow and passes NO script-ref must fail too,
-  // and keying off script-ref would never look at it.
+  // ── 5. ONE CHECKER COMMIT ─────────────────────────────────────────────────
+  // workflow-hardening.yml takes its checker from the commit on the caller's
+  // own `uses:` line, so a caller pinned at two commits has no single checker
+  // and the workflow fails closed. The pins are collected here and compared
+  // across every file once the walk is done. A `script-ref` input is now
+  // ignored for a remote caller; it is reported so it can be deleted, and it
+  // fails nothing.
   lines.forEach((line, index) => {
     if (isComment(line)) return
     const call = /uses:\s*4cloudguru\/shared-workflows\/\.github\/workflows\/workflow-hardening\.yml@([0-9a-f]{40})/.exec(line)
     if (!call) return
     enumerated.hardeningCalls++
     const pinned = call[1]
-    const refs = lines
+    if (!hardeningPins.has(pinned)) hardeningPins.set(pinned, [])
+    hardeningPins.get(pinned).push(`${rel}:${index + 1}`)
+    lines
       .map((l, i) => ({ l, i }))
       .filter(({ l }) => !isComment(l) && /^\s*script-ref:\s*\S/.test(l))
-      .map(({ l, i }) => ({ value: /^\s*script-ref:\s*(\S+)/.exec(l)[1].replace(/^["']|["']$/g, ''), at: i + 1 }))
-
-    if (refs.length === 0) {
-      fail(
-        'script-ref',
-        `${rel}:${index + 1}`,
-        'calls workflow-hardening.yml but passes no `script-ref` — it is a required input, and the checker would be taken from an unstated commit'
-      )
-      return
-    }
-    for (const ref of refs) {
-      if (ref.value !== pinned) {
-        fail(
+      .forEach(({ l, i }) => {
+        const value = /^\s*script-ref:\s*(\S+)/.exec(l)[1].replace(/^["']|["']$/g, '')
+        note(
           'script-ref',
-          `${rel}:${ref.at}`,
-          `\`script-ref\` is ${ref.value.slice(0, 8)} but the \`uses:\` pin beside it is ${pinned.slice(0, 8)} — the checker would come from a different commit than the workflow, so this gate would enforce something other than what the diff says. Dependabot rewrites the \`uses:\` line and not this one.`
+          `${rel}:${i + 1}`,
+          `\`script-ref\` is ignored: the checker is taken from the \`uses:\` pin (${pinned.slice(0, 8)})` +
+            (value === pinned ? '' : `, not from ${value.slice(0, 8)}`) +
+            '. Delete the input.'
         )
-      }
-    }
+      })
   })
 
   const jobs = parseJobs(lines)
@@ -594,6 +594,16 @@ if (enumerated.jobs === 0 && workflowFiles.length > 0) {
 
 /* ------------------------------------------------------------------ */
 
+if (hardeningPins.size > 1) {
+  fail(
+    'hardening-pin',
+    [...hardeningPins.values()].map((at) => at[0]).join(', '),
+    `workflow-hardening.yml is called at ${hardeningPins.size} different commits (` +
+      [...hardeningPins.keys()].map((sha) => sha.slice(0, 8)).join(', ') +
+      '). Its checker is taken from that pin, so there would be no single checker; pin every call to the same commit.'
+  )
+}
+
 const summary =
   `enumerated: ${enumerated.jobs} job(s) over ${enumerated.workflows} workflow(s), ${enumerated.uses} \`uses:\` ref(s), ` +
   `${enumerated.installs} npm install invocation(s), ${enumerated.hardenRunners} harden-runner step(s), ` +
@@ -604,11 +614,12 @@ const summary =
   `${enumerated.perTaskSpawn ? `, spawn: ${enumerated.perTaskSpawn}` : ''}.`
 
 if (JSON_OUTPUT) {
-  console.log(JSON.stringify({ enumerated, findings, failures: findings.length }, null, 2))
+  console.log(JSON.stringify({ enumerated, findings, notes, failures: findings.length }, null, 2))
   process.exit(findings.length ? 1 : 0)
 }
 
 console.log(summary)
+for (const n of notes) console.log(`NOTE [${n.kind}] ${n.where}: ${n.message}`)
 
 if (findings.length) {
   console.error('')

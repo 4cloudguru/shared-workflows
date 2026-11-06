@@ -23,12 +23,15 @@
 # whole justification applies here on day one instead of after the fact.
 #
 # WHAT IT DOES NOT DO. It does not push a fix and it does not merge anything.
-# Both signature-replay's Dependabot-authored-run guard and workflow-hardening's
-# script-ref coupling exist specifically to require a human to read the diff
-# before a shared-workflows bump reaches a secret-bearing job or a security
-# gate — see 4cloudguru/shared-workflows#36. Auto-applying the fix would BE
-# the compromise those guards defend against, wearing a bot's identity instead
-# of Dependabot's. This job's only job is to make sure a human finds out
+# signature-replay's Dependabot-authored-run guard exists specifically to
+# require a human to read the diff before a shared-workflows bump reaches a
+# secret-bearing job — see 4cloudguru/shared-workflows#36. Auto-applying the
+# fix would BE the compromise that guard defends against, wearing a bot's
+# identity instead of Dependabot's. (workflow-hardening's script-ref coupling
+# used to force the same human step on a bump of that gate. It no longer
+# does: the workflow reads its checker commit from the caller's own `uses:`
+# pin, a decision the owner took knowing it removes that step for the
+# hardening gate.) This job's only job is to make sure a human finds out
 # sooner than "happened to look."
 #
 # NO SEPARATE SECRET. Every repository already grants its own workflow's
@@ -78,10 +81,10 @@ jobs:
       # Plain gh CLI + jq, no checkout: every fact this job needs (open PRs,
       # their check rollups, this repo's own open tracking issues) comes from
       # the GitHub API, and reading a tree this job never touches would be
-      # scope this job does not need. That also means no script-ref coupling
-      # applies here, unlike workflow-hardening.yml and signature-replay.yml:
-      # there is no second checkout of a checker script to keep in sync with
-      # the `uses:` pin, because there is no checkout at all.
+      # scope this job does not need. That also means there is no second
+      # checkout of a checker script whose commit has to match the `uses:` pin,
+      # as workflow-hardening.yml has (it reads that commit from the caller's
+      # pin), because there is no checkout at all.
       - name: Reconcile stuck Dependabot PRs against tracking issues
         env:
           GH_TOKEN: ${{ github.token }}
