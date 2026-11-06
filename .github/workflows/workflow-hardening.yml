@@ -22,11 +22,13 @@ on:
     inputs:
       script-ref:
         description: >-
-          Commit of 4cloudguru/shared-workflows to take the checker from. MUST
-          be the same commit this workflow is pinned at on the caller's `uses:`
-          line.
-        required: true
+          Only for this repository's own `./` self-call. A remote caller passes
+          nothing: the checker is taken from the commit on the caller's own
+          `uses:` line, which is read from its checkout. A value a remote caller
+          still passes is ignored with a warning, and can be deleted.
+        required: false
         type: string
+        default: ""
 
 permissions:
   contents: read
@@ -51,22 +53,61 @@ jobs:
         with:
           persist-credentials: false
 
-      # REQUIRED, not defaulted. A default would have to name a literal commit,
-      # and the only commit available to write is the one BEFORE the change that
-      # adds the checker -- so the default would point at a tree where
-      # scripts/check-workflow-hardening.cjs does not exist, and every caller
-      # would fail on a file-not-found. Defaulting to a branch instead would
-      # make the gate mutable, which is the opposite of what pinning is for.
+      # WHICH COMMIT THE CHECKER COMES FROM. It must be the commit this workflow
+      # is running at, so the gate enforces what the caller's `uses:` line says.
+      # That commit is not reliably available from context: v1.22.0 read
+      # `github.job_workflow_sha` and #68 reverted it, because a genuine remote
+      # call saw it empty. A required `script-ref` input worked, but Dependabot
+      # rewrites the `uses:` line and never the input beside it, so every bump
+      # of this workflow failed until a human moved one line by hand.
+      #
+      # So the commit is read from the caller's own `uses:` line, in the
+      # checkout above: the line that selected this workflow for this run, in
+      # the commit under test. It carries no more trust than the pin already
+      # did. A caller pinned at more than one commit fails closed rather than
+      # picking one. Only this repository's `./` self-call has no such line,
+      # and it passes `script-ref`.
       #
       # The checker is taken from shared-workflows at a pinned commit rather
       # than from the caller, so a repo cannot weaken its own gate by editing
       # its copy -- which is the failure mode of shipping the script into
       # fourteen repos.
+      - name: Resolve the checker commit
+        id: checker-ref
+        env:
+          SCRIPT_REF: ${{ inputs.script-ref }}
+        run: |
+          set -euo pipefail
+          pins=$(grep -rhoE --include='*.yml' --include='*.yaml' \
+            '^[[:space:]]*uses:[[:space:]]*4cloudguru/shared-workflows/\.github/workflows/workflow-hardening\.yml@[0-9a-f]{40}' \
+            .github/workflows 2>/dev/null | grep -oE '[0-9a-f]{40}$' | sort -u || true)
+          count=$(printf '%s' "$pins" | grep -c . || true)
+          if [ "$count" -gt 1 ]; then
+            echo "::error title=workflow-hardening::.github/workflows calls workflow-hardening.yml at $count different commits ($(printf '%s' "$pins" | tr '\n' ',' | sed 's/,$//')). Pin every call to the same commit; the gate will not choose one." >&2
+            exit 1
+          elif [ "$count" -eq 1 ]; then
+            ref=$pins
+            if [ -n "$SCRIPT_REF" ] && [ "$SCRIPT_REF" != "$ref" ]; then
+              echo "::warning title=workflow-hardening::script-ref (${SCRIPT_REF:0:8}) is ignored: the checker is taken from the uses: pin (${ref:0:8}). Delete the script-ref input."
+            fi
+          elif [ -n "$SCRIPT_REF" ]; then
+            ref=$SCRIPT_REF
+          else
+            echo "::error title=workflow-hardening::found no uses: pin of 4cloudguru/shared-workflows/.github/workflows/workflow-hardening.yml in .github/workflows, and no script-ref was passed, so there is no commit to take the checker from." >&2
+            exit 1
+          fi
+          if ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=workflow-hardening::the checker commit must be a full 40-hex SHA, got '$ref'." >&2
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "checker commit: $ref"
+
       - name: Check out the shared checker
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: 4cloudguru/shared-workflows
-          ref: ${{ inputs.script-ref }}
+          ref: ${{ steps.checker-ref.outputs.ref }}
           path: .shared-workflows
           persist-credentials: false
 
