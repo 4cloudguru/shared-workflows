@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.30.0](https://github.com/4cloudguru/shared-workflows/compare/v1.29.3...v1.30.0) (2026-11-06)
+
+
+### Features
+
+* **workflow-hardening:** read the checker commit from the caller's own uses: pin ([#108](https://github.com/4cloudguru/shared-workflows/issues/108)) ([d77c2e2](https://github.com/4cloudguru/shared-workflows/commit/d77c2e254a76068ca890007b48c7b43749deb93f))
+
+
+### Bug Fixes
+
+* **tooling-pins:** move zizmor to 1.32.0 and zizmor-action to v0.8.1 ([#106](https://github.com/4cloudguru/shared-workflows/issues/106)) ([75913da](https://github.com/4cloudguru/shared-workflows/commit/75913da71137fd4e9d0a6d883e515e25bc3ddf9b))
+
 ## [1.29.3](https://github.com/4cloudguru/shared-workflows/compare/v1.29.2...v1.29.3) (2026-10-22)
 
 
